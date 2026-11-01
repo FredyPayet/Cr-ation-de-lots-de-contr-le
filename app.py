@@ -115,8 +115,9 @@ with st.sidebar:
         st.markdown("### 2. Réglages de création")
         mode_libelle = st.radio(
             "Comment regrouper les lots ?",
-            ["Par DCTS et fiche CEE", "Par fiche CEE (toutes DCTS confondues)"],
-            help="Par DCTS : un lot ne contient que des dossiers d'une même région.")
+            ["Par fiche CEE (toutes DCTS confondues)", "Par DCTS et fiche CEE"],
+            help="Par fiche CEE : les régions sont mélangées pour remplir les lots jusqu'à 20 "
+                 "opérations. Par DCTS : un lot ne contient que des dossiers d'une même région.")
         mode = "dcts_fiche" if mode_libelle.startswith("Par DCTS") else "fiche"
 
         toutes_dcts = sorted(d for d in df["dcts"].unique() if d)
@@ -299,22 +300,31 @@ with onglet_creation:
             else:
                 g, d = st.container(), st.container()
                 with g:
+                    # Histogramme groupé : lots en cours / lots à créer ; objectif écrit au-dessus
                     fig = go.Figure()
-                    for col, nom, coul in [("% actuel", "Lots en cours (actuel)", COULEURS["actuel"]),
-                                           ("% après création", "Après création", COULEURS["apres"]),
-                                           ("% objectif", "Objectif saisi", COULEURS["objectif"])]:
-                        fig.add_bar(y=rep["Bureau"], x=rep[col], name=nom, orientation="h",
-                                    marker_color=coul, text=[f"{v:.0f} %" for v in rep[col]],
-                                    textposition="outside",
-                                    hovertemplate="%{y} — " + nom + " : %{x:.1f} %<extra></extra>")
+                    for col, nom, coul in [("Lots en cours", "Lots en cours", COULEURS["actuel"]),
+                                           ("Nouveaux lots", "Lots à créer", COULEURS["apres"])]:
+                        fig.add_bar(x=rep["Bureau"], y=rep[col], name=nom, marker_color=coul,
+                                    text=rep[col], textposition="outside",
+                                    hovertemplate="%{x} — " + nom + " : %{y} lot(s)<extra></extra>")
+                    haut = max(rep[["Lots en cours", "Nouveaux lots"]].values.max(), 1)
+                    for _, r in rep.iterrows():
+                        fig.add_annotation(
+                            x=r["Bureau"], y=max(r["Lots en cours"], r["Nouveaux lots"]) + haut * 0.12,
+                            text=f"<b>Objectif {r['% objectif']:.0f} %</b><br>"
+                                 f"après création : {r['% après création']:.0f} %",
+                            showarrow=False, yanchor="bottom", font=dict(size=13, color=COULEURS["objectif"]))
                     fig.update_layout(
-                        barmode="group", height=110 + 75 * len(rep), margin=dict(l=0, r=10, t=10, b=0),
-                        legend=dict(orientation="h", y=-0.12), xaxis_title="% des lots",
-                        yaxis=dict(autorange="reversed", tickfont=dict(size=14, color="#1A202C")),
+                        barmode="group", bargap=0.3, height=440, margin=dict(l=0, r=0, t=10, b=0),
+                        legend=dict(orientation="h", y=-0.15), yaxis_title="Nombre de lots",
                         font=dict(size=14, color="#1A202C"), plot_bgcolor="white",
-                        xaxis=dict(gridcolor="#E5E9F0", range=[0, rep[["% actuel", "% après création",
-                                                                       "% objectif"]].values.max() * 1.2]))
+                        xaxis=dict(tickfont=dict(size=14, color="#1A202C")),
+                        yaxis=dict(gridcolor="#E5E9F0", range=[0, haut * 1.45]))
                     st.plotly_chart(fig, width="stretch")
+                    st.caption("Lots en cours = lots uniques aux étapes « En cours de constitution », "
+                               "« En demande de coordonnées » et « En cours de contrôle ». "
+                               "Au-dessus de chaque bureau : la part de marché saisie (objectif) et la "
+                               "part réelle une fois les nouveaux lots créés.")
                 with d:
                     pb = res["par_bureau"].reindex(res["bureaux"], fill_value=0)
                     pb["Nouveaux lots"] = rep.set_index("Bureau")["Nouveaux lots"]
@@ -324,10 +334,8 @@ with onglet_creation:
                         "En cours de contrôle": "Contrôle",
                         "Total en cours": "Total", "Nouveaux lots": "Nouveaux"})
                     pb.index.name = "Bureau"
-                    st.caption("Nombre de lots uniques par étape : « En cours de constitution », "
-                               "« En demande de coordonnées », « En cours de contrôle », "
-                               "puis nouveaux lots proposés.")
-                    st.dataframe(pb, width="stretch")
+                    with st.expander("Détail des lots en cours par étape"):
+                        st.dataframe(pb, width="stretch")
 
         # ---------------- Partie 2 : opérations intégrables ----------------
         with st.expander(f"2. Opérations intégrables par fiche CEE et par DCTS — "
@@ -356,8 +364,8 @@ with onglet_creation:
             vue["ecart_txt"] = [("✅ " if ok else "⚠️ ") + f"{e:.1f} mois".replace(".", ",")
                                 for ok, e in zip(vue["ecart_ok"], vue["ecart_mois"])]
             st.dataframe(
-                vue[["num_lot", "fiche", "type_lot", "dcts", "client", "bureau", "nb_dossiers",
-                     "nb_ops", "drr_min", "drr_max", "ecart_txt", "raison_bureau"]],
+                vue[["num_lot", "fiche", "type_lot", "nb_ops", "bureau", "lots_lies", "raison_bureau",
+                     "nb_dossiers", "dcts", "client", "drr_min", "drr_max", "ecart_txt"]],
                 hide_index=True, width="stretch", height=min(38 * (len(vue) + 1), 520),
                 column_config={
                     "num_lot": st.column_config.NumberColumn("Lot", format="%d", width="small"),
@@ -371,6 +379,11 @@ with onglet_creation:
                     "ecart_txt": st.column_config.TextColumn(
                         "Écart des dates", help="✅ = 4 mois ou moins ; ⚠️ = plus de 4 mois (non bloquant)."),
                     "raison_bureau": "Choix du bureau",
+                    "lots_lies": st.column_config.TextColumn(
+                        "Lots liés", width="large",
+                        help="Lots du même bureau contenant une autre fiche d'un des dossiers. "
+                             "RAS = bureau choisi selon les pourcentages. ⚠️ = une autre fiche du "
+                             "dossier n'est pas complète (statut AH « Sans objet »)."),
                 })
 
             with st.expander("🔎 Voir les dossiers d'un lot"):
@@ -467,11 +480,21 @@ with onglet_ecartes:
         st.plotly_chart(fig, width="stretch")
         motifs = st.multiselect("Filtrer par motif", sorted(ec["motif"].unique()),
                                 placeholder="Tous les motifs")
-        st.dataframe(ec[ec["motif"].isin(motifs)] if motifs else ec, hide_index=True,
+        vue_ec = ec[ec["motif"].isin(motifs)] if motifs else ec
+        st.dataframe(vue_ec, hide_index=True,
                      width="stretch",
                      column_config={"dossier": "N° dossier", "fiche": "Fiche CEE", "dcts": "DCTS",
                                     "motif": "Motif", "nb_ops": st.column_config.NumberColumn(
                                         "Opérations", format="%d")})
+        export_ec = vue_ec.rename(columns={"dossier": "N° dossier", "fiche": "Fiche CEE",
+                                           "dcts": "DCTS", "motif": "Motif", "nb_ops": "Opérations"})
+        export_ec.insert(0, "Date de l'export", date_fr(date_export))
+        st.download_button(
+            "⬇️ Télécharger les opérations écartées (Excel)" + (" — motifs filtrés" if motifs else ""),
+            data=exports.excel_tableau({"Opérations écartées": export_ec}),
+            file_name=f"Operations_ecartees_{date_export:%Y-%m-%d}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary", width="stretch")
 
 
 # ============================================================================
@@ -525,18 +548,40 @@ with onglet_historique:
                 "nb_dossiers": "Dossiers"})
 
         st.markdown("#### Détail par bénéficiaire")
+        TOUTES = "Toutes les dates conservées"
         dates = synthese_h.sort_values("date_export", ascending=False)["date_export"].tolist()
-        choix = st.selectbox("Date de l'export", dates, format_func=date_fr)
-        d = detail_h[detail_h["date_export"] == choix]
+        choix = st.selectbox("Date de l'export", [TOUTES] + dates,
+                             format_func=lambda x: x if x == TOUTES else date_fr(x))
+        d = detail_h if choix == TOUTES else detail_h[detail_h["date_export"] == choix]
         if d.empty:
             st.info("Pas de détail par bénéficiaire pour cette date.")
         else:
-            pivot = d.pivot_table(index="beneficiaire", columns="fiche", values="nb_operations",
-                                  aggfunc="sum", fill_value=0)
+            # Une ligne par date d'export et par bénéficiaire, une colonne par fiche CEE
+            pivot = d.pivot_table(index=["date_export", "beneficiaire"], columns="fiche",
+                                  values="nb_operations", aggfunc="sum", fill_value=0)
             pivot["Total"] = pivot.sum(axis=1)
-            pivot = pivot.sort_values("Total", ascending=False)
-            pivot.index.name = "Bénéficiaire"
-            st.dataframe(pivot, width="stretch")
+            pivot = pivot.reset_index().sort_values(["date_export", "Total"], ascending=[False, False])
+            pivot["date_export"] = pd.to_datetime(pivot["date_export"]).dt.strftime("%d/%m/%Y")
+            pivot = pivot.rename(columns={"date_export": "Date de l'export", "beneficiaire": "Bénéficiaire"})
+            pivot.columns.name = None
+            st.dataframe(pivot, hide_index=True, width="stretch")
+
+            synthese_export = (synthese_h if choix == TOUTES
+                               else synthese_h[synthese_h["date_export"] == choix])
+            synthese_export = synthese_export.assign(
+                date_export=synthese_export["date"].dt.strftime("%d/%m/%Y")).drop(columns="date") \
+                .rename(columns={
+                    "date_export": "Date de l'export", "date_archivage": "Archivé le",
+                    "nb_operations_a_integrer": "Opérations à intégrer", "nb_lots_a_creer": "Lots à créer",
+                    "nb_operations_ajoutees_lots_existants": "Ajoutées aux lots existants",
+                    "nb_dossiers": "Dossiers"})
+            nom = "toutes_dates" if choix == TOUTES else choix
+            st.download_button(
+                "⬇️ Télécharger cet historique (Excel)",
+                data=exports.excel_tableau({"Synthèse": synthese_export, "Détail bénéficiaires": pivot}),
+                file_name=f"Historique_lots_{nom}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary", width="stretch")
 
     with st.expander("💾 Sauvegarder ou restaurer l'archive"):
         st.caption("Sur Streamlit Cloud, l'archive peut être effacée lors d'un redémarrage de "

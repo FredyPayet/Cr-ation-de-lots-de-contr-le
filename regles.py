@@ -57,9 +57,8 @@ ETAPES_EN_COURS = [ETAPE_CONSTITUTION, "En demande de coordonnées", "En cours d
 DEBUT_2019 = pd.Timestamp("2019-04-11")
 TYPES_LOT = [
     "Engagement 2019",   # 11/04/2019 -> 31/08/2020
-    "Engagement 2020",   # 01/09/2020 -> 30/06/2021
-    "Engagement 2021",   # 01/07/2021 -> 31/12/2021 (hors BAR-EN-102)
-    "Murs 2021",         # BAR-EN-102 du 01/07/2021 au 31/12/2021
+    "Engagement 2020-2021",  # 01/09/2020 -> 31/12/2021 (hors Murs 2021)
+    "Murs 2021",        # BAR-EN-102 du 01/07/2021 au 31/12/2021
     "P5",                # 01/01/2022 -> 31/12/2025
     "P6",                # après le 31/12/2025
 ]
@@ -75,12 +74,16 @@ MOTIF_AVANT_2019 = "Engagement avant le 11/04/2019"
 MOTIF_DELAI = "Moins de 2 mois avant la fin du délai de contrôle"
 MOTIF_PLAGE = "Hors plage DFT cochée"
 
+# Raisons du choix du bureau de contrôle
+RAISON_MEME_BUREAU = "Même bureau qu'une autre fiche du dossier"
+RAISON_POURCENTAGES = "Répartition selon les pourcentages"
+
 
 @dataclass
 class Parametres:
     """Réglages choisis par l'utilisateur dans la barre latérale."""
     date_jour: date = field(default_factory=date.today)
-    mode: str = "dcts_fiche"              # "dcts_fiche" ou "fiche"
+    mode: str = "fiche"                   # "fiche" (par défaut) ou "dcts_fiche"
     dcts_retenues: list | None = None     # None = toutes les régions
     fatal: bool = False
     non_fatal: bool = False
@@ -166,10 +169,8 @@ def type_de_lot(fiche: str, d_engagement) -> str | None:
         return "Murs 2021"
     if d <= pd.Timestamp("2020-08-31"):
         return "Engagement 2019"
-    if d <= pd.Timestamp("2021-06-30"):
-        return "Engagement 2020"
     if d <= pd.Timestamp("2021-12-31"):
-        return "Engagement 2021"
+        return "Engagement 2020-2021"
     if d <= pd.Timestamp("2025-12-31"):
         return "P5"
     return "P6"
@@ -388,14 +389,17 @@ def lots_en_constitution(df: pd.DataFrame) -> pd.DataFrame:
     return res
 
 
-def proposer_ajouts(groupes: pd.DataFrame, lots: pd.DataFrame, p: Parametres) -> pd.DataFrame:
+def proposer_ajouts(groupes: pd.DataFrame, lots: pd.DataFrame, p: Parametres,
+                    imposes: dict | None = None) -> pd.DataFrame:
     """
     Propose des dossiers à ajouter aux lots en cours de constitution :
     même fiche, même type de lot, sans dépasser 20 opérations.
     Les dossiers les plus urgents passent en premier, et on privilégie
     ceux qui gardent un écart de dates de réalisation ≤ 4 mois.
     Les clients spécifiques sont exclus (ils ont leurs propres lots).
+    Un dossier déjà suivi par un bureau (autre fiche) ne rejoint qu'un lot de ce bureau.
     """
+    imposes = dict(imposes or {})
     colonnes = ["lot", "fiche", "type_lot", "bureau", "dossier", "dcts", "nb_ops",
                 "drr_min", "drr_max", "delai_restant_mois", "ecart_ok"]
     if groupes.empty or lots.empty:
@@ -416,6 +420,7 @@ def proposer_ajouts(groupes: pd.DataFrame, lots: pd.DataFrame, p: Parametres) ->
             continue
         cands = [c for c in par_cle.get((lot["fiche"], lot["type_lot"]), [])
                  if (c["dossier"], c["fiche"]) not in pris and c["nb_ops"] <= place
+                 and imposes.get(c["dossier"], lot["bureau"]) == lot["bureau"]
                  and not (p.mode == "dcts_fiche" and lot["dcts"] and c["dcts"] not in lot["dcts"])]
         if not cands:
             continue
@@ -437,6 +442,8 @@ def proposer_ajouts(groupes: pd.DataFrame, lots: pd.DataFrame, p: Parametres) ->
             dmax = max(dmax, c["drr_max"]) if pd.notna(dmax) else c["drr_max"]
             place -= int(c["nb_ops"])
             pris.add((c["dossier"], c["fiche"]))
+            if lot["bureau"]:
+                imposes.setdefault(c["dossier"], lot["bureau"])
             lignes.append({
                 "lot": lot["lot"], "fiche": lot["fiche"], "type_lot": lot["type_lot"],
                 "bureau": lot["bureau"], "dossier": c["dossier"], "dcts": c["dcts"],
@@ -458,10 +465,19 @@ def _accepte(total: int, nb: int, cible: int) -> bool:
 
 
 def _remplir_partition(groupes: list[dict], p: Parametres) -> list[list[dict]]:
-    """Répartit les dossiers d'une même partition (fiche + type + …) en lots."""
+    """
+    Répartit les dossiers d'une même partition (fiche + type + …) en lots.
+    Les DCTS peuvent être mélangées (mode « par fiche CEE »). Seule limite : deux
+    dossiers déjà suivis par deux bureaux différents (via une autre fiche) ne
+    peuvent pas partager un lot, puisqu'un lot n'a qu'un seul bureau.
+    """
     cible = p.taille_cible
     fenetre = pd.DateOffset(months=p.ecart_max_mois)
     lots = []
+
+    def compatible(bureau_lot: str, g: dict) -> bool:
+        b = g.get("bureau_impose", "")
+        return not b or not bureau_lot or b == bureau_lot
 
     # Dossiers de 20 opérations ou plus : un lot à eux seuls
     for g in groupes:
@@ -475,15 +491,18 @@ def _remplir_partition(groupes: list[dict], p: Parametres) -> list[list[dict]]:
         premier = restants.pop(0)
         lot, total = [premier], premier["nb_ops"]
         dmin, dmax = premier["drr_min"], premier["drr_max"]
+        bureau_lot = premier.get("bureau_impose", "")
 
         # Passe 1 : dossiers dont les dates restent dans la fenêtre de 4 mois
         for g in list(restants):
             if total >= cible:
                 break
             nmin, nmax = min(dmin, g["drr_min"]), max(dmax, g["drr_max"])
-            if nmax <= nmin + fenetre and _accepte(total, g["nb_ops"], cible):
+            if (nmax <= nmin + fenetre and compatible(bureau_lot, g)
+                    and _accepte(total, g["nb_ops"], cible)):
                 lot.append(g); restants.remove(g)
                 total += g["nb_ops"]; dmin, dmax = nmin, nmax
+                bureau_lot = bureau_lot or g.get("bureau_impose", "")
 
         # Passe 2 (souhaitable mais pas bloquant) : on complète avec les dates les plus proches
         if total < cible and restants:
@@ -496,10 +515,11 @@ def _remplir_partition(groupes: list[dict], p: Parametres) -> list[list[dict]]:
             for g in sorted(restants, key=distance):
                 if total >= cible:
                     break
-                if _accepte(total, g["nb_ops"], cible):
+                if compatible(bureau_lot, g) and _accepte(total, g["nb_ops"], cible):
                     lot.append(g); restants.remove(g)
                     total += g["nb_ops"]
                     dmin, dmax = min(dmin, g["drr_min"]), max(dmax, g["drr_max"])
+                    bureau_lot = bureau_lot or g.get("bureau_impose", "")
         lots.append(lot)
     return lots
 
@@ -512,7 +532,7 @@ def construire_lots(groupes: pd.DataFrame, p: Parametres) -> tuple[pd.DataFrame,
     Renvoie (lots, affectations) : une ligne par lot, une ligne par dossier.
     """
     col_lots = ["num_lot", "fiche", "type_lot", "dcts", "client", "nb_dossiers", "nb_ops",
-                "drr_min", "drr_max", "ecart_mois", "ecart_ok"]
+                "drr_min", "drr_max", "ecart_mois", "ecart_ok", "bureau_impose"]
     col_aff = ["num_lot", "dossier", "fiche", "dcts", "type_lot", "client", "nb_ops",
                "drr_min", "drr_max", "delai_restant_mois", "organisme"]
     if groupes.empty:
@@ -538,6 +558,8 @@ def construire_lots(groupes: pd.DataFrame, p: Parametres) -> tuple[pd.DataFrame,
                 "nb_dossiers": len(contenu), "nb_ops": sum(x["nb_ops"] for x in contenu),
                 "drr_min": dmin, "drr_max": dmax, "ecart_mois": ecart,
                 "ecart_ok": dmax <= dmin + pd.DateOffset(months=p.ecart_max_mois),
+                "bureau_impose": next((x.get("bureau_impose", "") for x in contenu
+                                       if x.get("bureau_impose", "")), ""),
             })
             for x in contenu:
                 affect.append({"num_lot": num, **{k: x[k] for k in col_aff if k != "num_lot"}})
@@ -598,34 +620,41 @@ def attribuer_bureaux(lots: pd.DataFrame, affect: pd.DataFrame, imposes: dict,
     for n in lots["num_lot"]:
         composantes.setdefault(racine(n), []).append(n)
 
-    dossiers_par_lot = affect.groupby("num_lot")["dossier"].apply(list).to_dict()
     total_pct = sum(max(0, pourcentages.get(b, 0)) for b in bureaux)
     cibles = ({b: max(0, pourcentages.get(b, 0)) / total_pct for b in bureaux} if total_pct > 0
               else {b: 1 / len(bureaux) for b in bureaux})
     compte = {b: int(existants.get(b, 0)) for b in bureaux}
     total_final = sum(compte.values()) + len(lots)
+    imposes_lot = dict(zip(lots["num_lot"], lots.get("bureau_impose", pd.Series("", index=lots.index))))
 
     attribution, raison = {}, {}
     a_repartir = []
     for nums in composantes.values():
-        connus = [imposes[d] for n in nums for d in dossiers_par_lot.get(n, []) if d in imposes]
+        # a) Lots contenant un dossier déjà suivi par un bureau : ce bureau
+        connus = [imposes_lot[n] for n in nums if imposes_lot.get(n)]
+        for n in nums:
+            if imposes_lot.get(n):
+                attribution[n] = imposes_lot[n]
+                raison[n] = RAISON_MEME_BUREAU
         if connus:
+            # b) Les lots liés (même dossier, autre fiche) suivent le même bureau
             b = pd.Series(connus).mode().iat[0]
             for n in nums:
-                attribution[n] = b
-                raison[n] = "Même bureau qu'une autre fiche du dossier"
-            compte[b] = compte.get(b, 0) + len(nums)
+                if n not in attribution:
+                    attribution[n] = b
+                    raison[n] = RAISON_MEME_BUREAU
+            for n in nums:
+                compte[attribution[n]] = compte.get(attribution[n], 0) + 1
         else:
             a_repartir.append(nums)
 
-    # Les plus grands groupes d'abord, vers le bureau le plus en retard sur son objectif
+    # c) Les autres : les plus grands groupes d'abord, vers le bureau le plus en retard
     for nums in sorted(a_repartir, key=len, reverse=True):
         candidats_b = [b for b in bureaux if cibles[b] > 0] or bureaux
         b = max(candidats_b, key=lambda x: (cibles[x] * total_final - compte[x], -compte[x]))
         for n in nums:
             attribution[n] = b
-            raison[n] = ("Répartition selon les pourcentages" if len(nums) == 1
-                         else "Répartition (dossier sur plusieurs fiches)")
+            raison[n] = RAISON_POURCENTAGES if len(nums) == 1 else RAISON_MEME_BUREAU
         compte[b] += len(nums)
 
     lots["bureau"] = lots["num_lot"].map(attribution)
@@ -644,26 +673,30 @@ def calculer(df: pd.DataFrame, p: Parametres, ajouts_retenus: pd.DataFrame | Non
     """
     groupes, ecartes = preparer_groupes(df, p)
     existants = lots_en_constitution(df)
-    propositions = proposer_ajouts(groupes, existants, p)
+    imposes = bureaux_imposes(df)          # dossier -> bureau déjà utilisé (autre fiche)
+    propositions = proposer_ajouts(groupes, existants, p, imposes)
     ajouts = propositions if ajouts_retenus is None else ajouts_retenus
 
     # Les dossiers ajoutés aux lots existants ne sont plus disponibles (partie 2 et 3)
     cles_ajout = set(zip(ajouts["dossier"], ajouts["fiche"]))
     restants = groupes[[(d, f) not in cles_ajout
-                        for d, f in zip(groupes["dossier"], groupes["fiche"])]]
+                        for d, f in zip(groupes["dossier"], groupes["fiche"])]].copy()
 
-    lots, affect = construire_lots(restants, p)
-
-    imposes = bureaux_imposes(df)
+    # Un ajout à un lot existant fixe aussi le bureau des autres fiches du dossier
     for d, b in zip(ajouts["dossier"], ajouts["bureau"]):
         if b:
             imposes.setdefault(d, b)
+    restants["bureau_impose"] = restants["dossier"].map(imposes).fillna("")
+
+    lots, affect = construire_lots(restants, p)
+
     bureaux = liste_bureaux(df)
     par_bureau = lots_en_cours_par_bureau(df)
     existants_bureau = par_bureau["Total en cours"].to_dict() if not par_bureau.empty else {}
     lots = attribuer_bureaux(lots, affect, imposes, bureaux, existants_bureau, p.pourcentages)
     if not affect.empty:
         affect = affect.merge(lots[["num_lot", "bureau"]], on="num_lot", how="left")
+    lots["lots_lies"] = calculer_lots_lies(df, lots, affect, ajouts)
 
     return {
         "groupes": groupes, "ecartes": ecartes, "lots_existants": existants,
@@ -671,6 +704,59 @@ def calculer(df: pd.DataFrame, p: Parametres, ajouts_retenus: pd.DataFrame | Non
         "lots": lots, "affectations": affect, "bureaux": bureaux,
         "par_bureau": par_bureau,
     }
+
+
+def calculer_lots_lies(df: pd.DataFrame, lots: pd.DataFrame, affect: pd.DataFrame,
+                       ajouts: pd.DataFrame) -> pd.Series:
+    """
+    Colonne « Lots liés » de chaque nouveau lot :
+      - les lots (nouveaux ou existants) du même bureau qui contiennent une autre
+        fiche d'un des dossiers du lot ;
+      - « RAS » si le bureau a été choisi selon les pourcentages ;
+      - un avertissement si une autre fiche d'un dossier est en statut AH
+        « Sans objet » (fiche pas complète, donc pas intégrable).
+    """
+    if lots.empty:
+        return pd.Series(dtype=str)
+
+    # Lots existants de chaque dossier : dossier -> {(nom du lot, fiche, bureau)}
+    avec_lot = df[(df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))]
+    existants: dict[str, set] = {}
+    for d, l, f, b in zip(avec_lot["dossier"], avec_lot["lot"], avec_lot["fiche"], avec_lot["bureau"]):
+        existants.setdefault(d, set()).add((l, f, b))
+    for d, l, f, b in zip(ajouts["dossier"], ajouts["lot"], ajouts["fiche"], ajouts["bureau"]):
+        existants.setdefault(d, set()).add((l, f, b))
+
+    # Fiches « Sans objet » sans lot : dossier -> {fiches}
+    sans_lot = df[(df["lot"] == "") | (df["lot"].map(normaliser) == normaliser(LOT_VIDE))]
+    so = sans_lot[sans_lot["statut_ah"].str.lower().str.strip() == STATUT_EXCLU.lower()]
+    incompletes: dict[str, set] = {}
+    for d, f in zip(so["dossier"], so["fiche"]):
+        incompletes.setdefault(d, set()).add(f)
+
+    # Nouveaux lots de chaque dossier : dossier -> {(n° lot, fiche)}
+    nouveaux: dict[str, set] = {}
+    for d, n, f in zip(affect["dossier"], affect["num_lot"], affect["fiche"]):
+        nouveaux.setdefault(d, set()).add((n, f))
+    dossiers_lot = affect.groupby("num_lot")["dossier"].apply(list).to_dict()
+
+    textes = []
+    for lot in lots.to_dict("records"):
+        n, fiche, bureau = lot["num_lot"], lot["fiche"], lot["bureau"]
+        lies_nouveaux, lies_existants, alertes = set(), set(), []
+        for d in dossiers_lot.get(n, []):
+            lies_nouveaux |= {m for m, f in nouveaux.get(d, set()) if m != n and f != fiche}
+            lies_existants |= {l for l, f, b in existants.get(d, set()) if b == bureau}
+            autres = sorted(f for f in incompletes.get(d, set()) if f != fiche)
+            if autres:
+                alertes.append(f"⚠️ {d} : fiche {', '.join(autres)} pas complète (Sans objet)")
+        lies = [f"Lot {m}" for m in sorted(lies_nouveaux)] + sorted(lies_existants)
+        if lot.get("raison_bureau") == RAISON_POURCENTAGES and not lies:
+            morceaux = ["RAS"] if not alertes else []
+        else:
+            morceaux = [", ".join(lies)] if lies else []
+        textes.append(" ; ".join(morceaux + alertes) or "RAS")
+    return pd.Series(textes, index=lots.index)
 
 
 def tableau_fiche_dcts(restants: pd.DataFrame) -> pd.DataFrame:
@@ -726,7 +812,7 @@ def resume_archive(df: pd.DataFrame, res: dict, date_export: date) -> tuple[dict
 
     synthese = {
         "date_export": date_export.isoformat(),
-        "date_archivage": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        "date_archivage": pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"),
         "nb_operations_a_integrer": int(res["lots"]["nb_ops"].sum() + res["ajouts"]["nb_ops"].sum()),
         "nb_lots_a_creer": int(len(res["lots"])),
         "nb_operations_ajoutees_lots_existants": int(res["ajouts"]["nb_ops"].sum()),

@@ -52,16 +52,18 @@ pourcentages : si besoin, ressaisissez-les puis cliquez sur « Enregistrer les p
      Le dossier est exclu s'il reste moins de 2 mois.
 3. **Type de lot** selon la date réelle d'engagement :
    - Engagement 2019 : du 11/04/2019 au 31/08/2020
-   - Engagement 2020 : du 01/09/2020 au 30/06/2021
-   - Engagement 2021 : du 01/07/2021 au 31/12/2021
-   - Murs 2021 : BAR-EN-102 du 01/07/2021 au 31/12/2021 (prioritaire sur Engagement 2021)
+   - Engagement 2020-2021 : du 01/09/2020 au 31/12/2021
+   - Murs 2021 : BAR-EN-102 du 01/07/2021 au 31/12/2021 (prioritaire sur Engagement 2020-2021)
    - P5 : du 01/01/2022 au 31/12/2025
    - P6 : après le 31/12/2025
 4. **Plage de DFT** (facultative) : Fatal = réalisation du 01/01/N au 31/03/N+1 ;
    Non fatal = réalisation après le 31/03/N+1 (N = année de référence, par défaut l'année en cours).
 5. **Partie 1** : les dossiers sont d'abord proposés pour compléter les lots « En cours de
    constitution », s'ils ont la même fiche et le même type de lot, sans dépasser 20 opérations.
-6. **Partie 3, nouveaux lots** : un lot = une fiche CEE + un type de lot (+ une DCTS selon le mode).
+6. **Partie 3, nouveaux lots** : un lot = une fiche CEE + un type de lot. Par défaut, les DCTS
+   sont mélangées ; le mode « Par DCTS et fiche CEE » sépare les régions.
+   - Deux dossiers déjà suivis par deux bureaux différents (via une autre fiche) ne peuvent pas
+     partager un lot, puisqu'un lot n'a qu'un bureau.
    - Les dossiers les plus urgents sont placés d'abord, pour viser 20 opérations.
    - On cherche un écart de 4 mois maximum entre dates de réalisation, sans en faire une règle bloquante.
    - Un dossier de 20 opérations ou plus forme un lot à lui seul. Un dossier n'est jamais coupé.
@@ -71,6 +73,9 @@ pourcentages : si besoin, ressaisissez-les puis cliquez sur « Enregistrer les p
      aussi si une autre fiche est déjà dans un lot existant.
    - Sinon, chaque lot va au bureau le plus en retard sur son pourcentage, en comptant les lots
      en cours (constitution, demande de coordonnées, contrôle).
+   - La colonne **Lots liés** liste les lots du même bureau qui contiennent une autre fiche du
+     dossier (« RAS » si le bureau vient des pourcentages). Un ⚠️ signale une autre fiche du
+     dossier en statut AH « Sans objet », donc pas complète.
 
 Pour modifier une règle (dates, taille cible, délai de 2 mois…), ouvrez `regles.py`. Les
 constantes sont regroupées en haut du fichier et dans la classe `Parametres`.

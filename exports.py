@@ -52,10 +52,10 @@ def excel_fiche(fiche: str, lots: pd.DataFrame, affect: pd.DataFrame) -> bytes:
             "num_lot": "Lot", "type_lot": "Type de lot", "dcts": "DCTS", "client": "Client spécifique",
             "bureau": "Bureau de contrôle", "nb_dossiers": "Nb dossiers", "nb_ops": "Nb opérations",
             "drr_min": "Réalisation la plus ancienne", "drr_max": "Réalisation la plus récente",
-            "ecart_mois": "Écart (mois)"})
+            "ecart_mois": "Écart (mois)", "lots_lies": "Lots liés"})
         synthese = synthese[["Lot", "Type de lot", "DCTS", "Client spécifique", "Bureau de contrôle",
                              "Nb dossiers", "Nb opérations", "Réalisation la plus ancienne",
-                             "Réalisation la plus récente", "Écart (mois)"]]
+                             "Réalisation la plus récente", "Écart (mois)", "Lots liés"]]
         synthese.to_excel(w, sheet_name="Synthèse", index=False)
         _mettre_en_forme(w.sheets["Synthèse"])
 
@@ -89,6 +89,16 @@ def excel_ajouts(ajouts: pd.DataFrame) -> bytes:
                 .replace("[", "(").replace("]", ")").replace(":", "-")
             tableau.to_excel(w, sheet_name=nom, index=False)
             _mettre_en_forme(w.sheets[nom])
+    return tampon.getvalue()
+
+
+def excel_tableau(onglets: dict[str, pd.DataFrame]) -> bytes:
+    """Fichier Excel simple : {nom d'onglet: tableau}, avec mise en forme."""
+    tampon = io.BytesIO()
+    with pd.ExcelWriter(tampon, engine="openpyxl") as w:
+        for nom, tableau in onglets.items():
+            tableau.to_excel(w, sheet_name=nom[:31], index=False)
+            _mettre_en_forme(w.sheets[nom[:31]])
     return tampon.getvalue()
 
 
