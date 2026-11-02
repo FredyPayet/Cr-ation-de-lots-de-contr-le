@@ -63,14 +63,27 @@ def date_fr(d) -> str:
 # 2. FONCTIONS MISES EN CACHE
 # ============================================================================
 
+# Empreinte du code des règles : quand regles.py, exports.py ou stockage.py change
+# (nouvelle version déployée), les calculs gardés en mémoire sont automatiquement ignorés.
+VERSION_CODE = hashlib.md5(b"".join(
+    open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
+
+# Vérification que tous les fichiers ont bien été mis à jour ensemble
+if not hasattr(regles, "calculer_lots_lies_ajouts"):
+    st.error("⚠️ Mise à jour incomplète : le fichier « regles.py » est d'une ancienne version. "
+             "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
+             "stockage.py) par ceux de la dernière version, puis redémarrez l'application.")
+    st.stop()
+
+
 @st.cache_data(show_spinner="Lecture du fichier Excel… (quelques secondes pour un gros export)")
-def charger_export(contenu: bytes) -> pd.DataFrame:
+def charger_export(contenu: bytes, version: str = VERSION_CODE) -> pd.DataFrame:
     return regles.lire_export(io.BytesIO(contenu))
 
 
 @st.cache_data(show_spinner="Calcul des lots…")
 def calculer(_df: pd.DataFrame, cle_fichier: str, cle_params: str, _p: regles.Parametres,
-             cle_ajouts: str, _ajouts: pd.DataFrame | None) -> dict:
+             cle_ajouts: str, _ajouts: pd.DataFrame | None, version: str = VERSION_CODE) -> dict:
     # Les paramètres précédés de « _ » ne servent pas de clé : les clés texte suffisent.
     return regles.calculer(_df, _p, _ajouts)
 
@@ -98,7 +111,7 @@ if fichier is not None:
     contenu = fichier.getvalue()
     cle_fichier = hashlib.md5(contenu).hexdigest()
     try:
-        df = charger_export(contenu)
+        df = charger_export(contenu, VERSION_CODE)
     except regles.ErreurFichier as e:
         erreur = str(e)
 
@@ -213,13 +226,15 @@ with onglet_creation:
                                  "j": str(p.date_jour)}, sort_keys=True)
 
         # Premier calcul : toutes les propositions d'ajout aux lots existants
-        base = calculer(df, cle_fichier, cle_params, p, "toutes", None)
+        base = calculer(df, cle_fichier, cle_params, p, "toutes", None, VERSION_CODE)
 
         zone_indicateurs = st.container()
         zone_bureaux = st.container()
 
         # ---------------- Partie 1 : compléter les lots existants ----------------
         props = base["propositions"]
+        if "lots_lies" not in props.columns:   # sécurité si un ancien calcul est encore en mémoire
+            props = props.assign(lots_lies="RAS")
         existants = base["lots_existants"]
         with st.expander(f"1. Compléter les lots « En cours de constitution » — "
                          f"{len(existants)} lot(s), {fr(props['nb_ops'].sum())} opération(s) proposée(s)"):
@@ -284,7 +299,7 @@ with onglet_creation:
 
         # Calcul final avec les ajouts retenus par l'utilisateur
         cle_ajouts = "|".join(sorted(f"{d}#{f}" for d, f in zip(ajouts["dossier"], ajouts["fiche"])))
-        res = calculer(df, cle_fichier, cle_params, p, cle_ajouts, ajouts)
+        res = calculer(df, cle_fichier, cle_params, p, cle_ajouts, ajouts, VERSION_CODE)
         lots, affect = res["lots"], res["affectations"]
         ajouts = res["ajouts"]   # avec la colonne « Lots liés » recalculée
 
