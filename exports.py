@@ -77,14 +77,42 @@ def excel_fiche(fiche: str, lots: pd.DataFrame, affect: pd.DataFrame) -> bytes:
     return tampon.getvalue()
 
 
-def excel_ajouts(ajouts: pd.DataFrame) -> bytes:
-    """Dossiers à ajouter aux lots existants : un onglet par lot existant."""
+def excel_ajouts(ajouts: pd.DataFrame, lots_existants: pd.DataFrame | None = None,
+                 date_export: date | None = None) -> bytes:
+    """
+    Dossiers à ajouter aux lots « En cours de constitution » :
+    un onglet « Synthèse » (toute la liste, avec les lots liés) puis un onglet par lot existant.
+    """
     tampon = io.BytesIO()
+    if "lots_lies" not in ajouts.columns:
+        ajouts = ajouts.assign(lots_lies="")
     with pd.ExcelWriter(tampon, engine="openpyxl") as w:
+        synthese = ajouts.copy()
+        if lots_existants is not None and not lots_existants.empty:
+            synthese = synthese.merge(lots_existants[["lot", "nb_ops"]].rename(
+                columns={"nb_ops": "ops_avant"}), on="lot", how="left")
+            total = synthese.groupby("lot")["nb_ops"].transform("sum")
+            synthese["ops_apres"] = synthese["ops_avant"] + total
+        else:
+            synthese["ops_avant"] = None
+            synthese["ops_apres"] = None
+        synthese = _dates(synthese, ["drr_min"])
+        synthese.insert(0, "date_export", date_export.strftime("%d/%m/%Y") if date_export else "")
+        synthese = synthese[["date_export", "lot", "fiche", "type_lot", "bureau", "dossier", "nb_ops",
+                             "lots_lies", "dcts", "drr_min", "delai_restant_mois", "ops_avant",
+                             "ops_apres"]].rename(columns={
+            "date_export": "Date de l'export", "lot": "Lot existant", "fiche": "Fiche CEE",
+            "type_lot": "Type de lot", "bureau": "Bureau de contrôle", "dossier": "N° dossier",
+            "nb_ops": "Nombre d'opérations", "lots_lies": "Lots liés", "dcts": "DCTS",
+            "drr_min": "Date de réalisation", "delai_restant_mois": "Délai restant (mois)",
+            "ops_avant": "Opérations du lot avant ajout", "ops_apres": "Opérations du lot après ajout"})
+        synthese.to_excel(w, sheet_name="Synthèse", index=False)
+        _mettre_en_forme(w.sheets["Synthèse"])
+
         for lot, contenu in ajouts.groupby("lot", sort=True):
-            tableau = contenu[["dossier", "nb_ops", "fiche", "dcts"]].rename(columns={
+            tableau = contenu[["dossier", "nb_ops", "fiche", "dcts", "lots_lies"]].rename(columns={
                 "dossier": "N° dossier", "nb_ops": "Nombre d'opérations",
-                "fiche": "Fiche CEE", "dcts": "DCTS"})
+                "fiche": "Fiche CEE", "dcts": "DCTS", "lots_lies": "Lots liés"})
             nom = str(lot)[:31].replace("/", "-").replace("\\", "-").replace("?", "").replace("*", "") \
                 .replace("[", "(").replace("]", ")").replace(":", "-")
             tableau.to_excel(w, sheet_name=nom, index=False)
@@ -111,5 +139,5 @@ def zip_lots(lots: pd.DataFrame, affect: pd.DataFrame, ajouts: pd.DataFrame,
         for fiche in sorted(lots["fiche"].unique()):
             z.writestr(f"Lots_{fiche}_{suffixe}.xlsx", excel_fiche(fiche, lots, affect))
         if not ajouts.empty:
-            z.writestr(f"Ajouts_lots_existants_{suffixe}.xlsx", excel_ajouts(ajouts))
+            z.writestr(f"Ajouts_lots_existants_{suffixe}.xlsx", excel_ajouts(ajouts, None, date_export))
     return tampon.getvalue()

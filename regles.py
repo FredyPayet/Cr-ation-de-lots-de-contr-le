@@ -697,6 +697,11 @@ def calculer(df: pd.DataFrame, p: Parametres, ajouts_retenus: pd.DataFrame | Non
     if not affect.empty:
         affect = affect.merge(lots[["num_lot", "bureau"]], on="num_lot", how="left")
     lots["lots_lies"] = calculer_lots_lies(df, lots, affect, ajouts)
+    # Partie 1 : mêmes informations pour les dossiers proposés aux lots existants
+    propositions = propositions.copy()
+    propositions["lots_lies"] = calculer_lots_lies_ajouts(df, propositions, ajouts, affect)
+    ajouts = ajouts.copy()
+    ajouts["lots_lies"] = calculer_lots_lies_ajouts(df, ajouts, ajouts, affect)
 
     return {
         "groupes": groupes, "ecartes": ecartes, "lots_existants": existants,
@@ -704,6 +709,55 @@ def calculer(df: pd.DataFrame, p: Parametres, ajouts_retenus: pd.DataFrame | Non
         "lots": lots, "affectations": affect, "bureaux": bureaux,
         "par_bureau": par_bureau,
     }
+
+
+def _index_liens(df: pd.DataFrame, ajouts: pd.DataFrame, affect: pd.DataFrame):
+    """
+    Prépare, pour chaque dossier :
+      - existants  : {(nom du lot, fiche, bureau)} lots existants + ajouts de la partie 1
+      - incompletes: {fiches} en statut AH « Sans objet » et sans lot
+      - nouveaux   : {(n° de nouveau lot, fiche)}
+    """
+    avec_lot = df[(df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))]
+    existants: dict[str, set] = {}
+    for d, l, f, b in zip(avec_lot["dossier"], avec_lot["lot"], avec_lot["fiche"], avec_lot["bureau"]):
+        existants.setdefault(d, set()).add((l, f, b))
+    for d, l, f, b in zip(ajouts["dossier"], ajouts["lot"], ajouts["fiche"], ajouts["bureau"]):
+        existants.setdefault(d, set()).add((l, f, b))
+
+    sans_lot = df[(df["lot"] == "") | (df["lot"].map(normaliser) == normaliser(LOT_VIDE))]
+    so = sans_lot[sans_lot["statut_ah"].str.lower().str.strip() == STATUT_EXCLU.lower()]
+    incompletes: dict[str, set] = {}
+    for d, f in zip(so["dossier"], so["fiche"]):
+        incompletes.setdefault(d, set()).add(f)
+
+    nouveaux: dict[str, set] = {}
+    if not affect.empty:
+        for d, n, f in zip(affect["dossier"], affect["num_lot"], affect["fiche"]):
+            nouveaux.setdefault(d, set()).add((n, f))
+    return existants, incompletes, nouveaux
+
+
+def calculer_lots_lies_ajouts(df: pd.DataFrame, table: pd.DataFrame, ajouts: pd.DataFrame,
+                              affect: pd.DataFrame) -> pd.Series:
+    """
+    Colonne « Lots liés » de la partie 1 (une ligne = un dossier proposé pour un lot existant) :
+    les autres lots du même bureau qui contiennent ce dossier (lots existants, autres
+    ajouts ou nouveaux lots), « RAS » s'il n'y en a pas, et un ⚠️ si une autre fiche
+    du dossier est en statut AH « Sans objet ».
+    """
+    if table.empty:
+        return pd.Series(dtype=str)
+    existants, incompletes, nouveaux = _index_liens(df, ajouts, affect)
+    textes = []
+    for r in table.to_dict("records"):
+        d, lot, fiche, bureau = r["dossier"], r["lot"], r["fiche"], r["bureau"]
+        lies = sorted({l for l, f, b in existants.get(d, set()) if l != lot and b == bureau})
+        lies = [f"Lot {n}" for n in sorted(n for n, f in nouveaux.get(d, set()) if f != fiche)] + lies
+        autres = sorted(f for f in incompletes.get(d, set()) if f != fiche)
+        alerte = [f"⚠️ fiche {', '.join(autres)} pas complète (Sans objet)"] if autres else []
+        textes.append(" ; ".join(([", ".join(lies)] if lies else []) + alerte) or "RAS")
+    return pd.Series(textes, index=table.index)
 
 
 def calculer_lots_lies(df: pd.DataFrame, lots: pd.DataFrame, affect: pd.DataFrame,
@@ -718,26 +772,7 @@ def calculer_lots_lies(df: pd.DataFrame, lots: pd.DataFrame, affect: pd.DataFram
     """
     if lots.empty:
         return pd.Series(dtype=str)
-
-    # Lots existants de chaque dossier : dossier -> {(nom du lot, fiche, bureau)}
-    avec_lot = df[(df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))]
-    existants: dict[str, set] = {}
-    for d, l, f, b in zip(avec_lot["dossier"], avec_lot["lot"], avec_lot["fiche"], avec_lot["bureau"]):
-        existants.setdefault(d, set()).add((l, f, b))
-    for d, l, f, b in zip(ajouts["dossier"], ajouts["lot"], ajouts["fiche"], ajouts["bureau"]):
-        existants.setdefault(d, set()).add((l, f, b))
-
-    # Fiches « Sans objet » sans lot : dossier -> {fiches}
-    sans_lot = df[(df["lot"] == "") | (df["lot"].map(normaliser) == normaliser(LOT_VIDE))]
-    so = sans_lot[sans_lot["statut_ah"].str.lower().str.strip() == STATUT_EXCLU.lower()]
-    incompletes: dict[str, set] = {}
-    for d, f in zip(so["dossier"], so["fiche"]):
-        incompletes.setdefault(d, set()).add(f)
-
-    # Nouveaux lots de chaque dossier : dossier -> {(n° lot, fiche)}
-    nouveaux: dict[str, set] = {}
-    for d, n, f in zip(affect["dossier"], affect["num_lot"], affect["fiche"]):
-        nouveaux.setdefault(d, set()).add((n, f))
+    existants, incompletes, nouveaux = _index_liens(df, ajouts, affect)
     dossiers_lot = affect.groupby("num_lot")["dossier"].apply(list).to_dict()
 
     textes = []

@@ -238,12 +238,12 @@ with onglet_creation:
                     ajouter=True,
                     ecart=props["ecart_ok"].map({True: "✅ Oui", False: "⚠️ Non"}))
                 edite = st.data_editor(
-                    vue[["ajouter", "lot", "fiche", "type_lot", "bureau", "dossier", "dcts", "nb_ops",
-                         "drr_min", "delai_restant_mois", "ecart"]],
+                    vue[["ajouter", "lot", "fiche", "type_lot", "bureau", "dossier", "nb_ops",
+                         "lots_lies", "dcts", "drr_min", "delai_restant_mois", "ecart"]],
                     key=f"ajouts_{cle_fichier}_{hashlib.md5(cle_params.encode()).hexdigest()}",
                     hide_index=True, width="stretch",
                     disabled=["lot", "fiche", "type_lot", "bureau", "dossier", "dcts", "nb_ops",
-                              "drr_min", "delai_restant_mois", "ecart"],
+                              "drr_min", "delai_restant_mois", "ecart", "lots_lies"],
                     column_config={
                         "ajouter": st.column_config.CheckboxColumn("Ajouter ?", width="small"),
                         "lot": "Lot existant", "fiche": "Fiche CEE", "type_lot": "Type de lot",
@@ -255,6 +255,12 @@ with onglet_creation:
                             help="Mois restants avant la date de réalisation + 12 mois."),
                         "ecart": st.column_config.TextColumn(
                             "Écart ≤ 4 mois", help="Les dates de réalisation du lot restent dans 4 mois."),
+                        "lots_lies": st.column_config.TextColumn(
+                            "Lots liés", width="medium",
+                            help="Autres lots du même bureau contenant ce dossier (une autre fiche). "
+                                 "RAS = aucun. ⚠️ = une autre fiche du dossier n'est pas complète "
+                                 "(statut AH « Sans objet »). Un dossier n'est jamais proposé à un "
+                                 "lot d'un autre bureau que celui de ses autres fiches."),
                     })
                 ajouts = props[edite["ajouter"].values]
 
@@ -274,11 +280,21 @@ with onglet_creation:
                         "apres": st.column_config.ProgressColumn(
                             "Après ajout (sur 20)", min_value=0, max_value=20, format="%d"),
                     })
+            zone_export_p1 = st.empty()   # bouton d'export, rempli après le calcul final
 
         # Calcul final avec les ajouts retenus par l'utilisateur
         cle_ajouts = "|".join(sorted(f"{d}#{f}" for d, f in zip(ajouts["dossier"], ajouts["fiche"])))
         res = calculer(df, cle_fichier, cle_params, p, cle_ajouts, ajouts)
         lots, affect = res["lots"], res["affectations"]
+        ajouts = res["ajouts"]   # avec la colonne « Lots liés » recalculée
+
+        if not ajouts.empty:
+            zone_export_p1.download_button(
+                "⬇️ Télécharger les dossiers à ajouter aux lots existants (Excel)",
+                data=exports.excel_ajouts(ajouts, res["lots_existants"], date_export),
+                file_name=f"Ajouts_lots_existants_{date_export:%Y-%m-%d}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary", width="stretch")
 
         # ---------------- Indicateurs ----------------
         with zone_indicateurs:
