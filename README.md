@@ -11,12 +11,13 @@ aux bureaux de contrôle, et qui archive les résultats de chaque export.
 | `app.py` | Interface (écrans, boutons, graphiques) |
 | `regles.py` | **Toutes les règles métier** (éligibilité, types de lot, construction des lots, bureaux) |
 | `exports.py` | Fichiers Excel téléchargés (un fichier par fiche CEE, un onglet par lot) |
-| `stockage.py` | Sauvegarde des réglages et de l'archive, lecture du Google Sheet clients |
+| `stockage.py` | Archive et réglages (Google Sheet ou dossier local), lecture de la liste des clients |
 | `requirements.txt` | Bibliothèques Python nécessaires |
 | `.streamlit/config.toml` | Couleurs et taille maximale des fichiers chargés |
+| `.streamlit/secrets.toml.exemple` | Modèle des « secrets » pour le Google Sheet d'archive |
 
-Le dossier `donnees/` est créé automatiquement : il contient les pourcentages enregistrés
-et l'archive.
+Sans Google Sheet configuré, l'archive et les réglages sont enregistrés dans le dossier
+`donnees/`, créé automatiquement. Ce stockage est **temporaire** sur Streamlit Cloud.
 
 ## Tester sur votre ordinateur
 
@@ -36,11 +37,82 @@ L'application s'ouvre dans le navigateur (http://localhost:8501).
 5. Dans **Settings → Sharing**, limitez l'accès aux personnes autorisées par e-mail. Les fichiers
    chargés contiennent des SIREN et des noms de clients.
 
-⚠️ **Sauvegarde de l'archive** : Streamlit Cloud peut vider le dossier `donnees/` quand
-l'application redémarre (mise à jour du code, longue inactivité). Dans l'onglet
-**Historique**, utilisez **« Télécharger l'archive complète »** après chaque archivage. Le
-bouton **« Réimporter une archive »** restaure tout en un clic. Il en va de même pour les
-pourcentages : si besoin, ressaisissez-les puis cliquez sur « Enregistrer les pourcentages ».
+## Archive permanente dans un Google Sheet (≈ 15 minutes, une seule fois)
+
+Streamlit Cloud vide ses fichiers à chaque redémarrage (mise à jour du code, veille). Pour
+conserver toutes les archives, l'application les écrit dans un Google Sheet grâce à un
+**compte de service** : une sorte d'utilisateur « robot » Google, gratuit, à qui vous
+donnez accès au fichier.
+
+### Étape 1 — Créer le Google Sheet d'archive
+1. Créez un Google Sheet vide, par exemple « Archive création des lots ».
+2. Copiez son lien depuis la barre d'adresse.
+
+### Étape 2 — Créer le compte de service
+1. Ouvrez https://console.cloud.google.com et connectez-vous.
+2. En haut, menu des projets → **Nouveau projet** → nom « creation-lots » → **Créer**.
+   Sélectionnez ensuite ce projet.
+3. Menu ☰ → **API et services → Bibliothèque** → cherchez **Google Sheets API** → **Activer**.
+4. Menu ☰ → **IAM et administration → Comptes de service** → **Créer un compte de service**.
+   Nommez-le « archive-lots », puis cliquez sur **Créer et continuer**, puis **OK**.
+   Aucun rôle n'est nécessaire.
+5. Cliquez sur le compte créé → onglet **Clés** → **Ajouter une clé → Créer une clé → JSON**.
+   Un fichier `.json` est téléchargé. **Gardez-le secret** : il donne accès au compte.
+   ⚠️ Si votre entreprise bloque la création de clés, demandez à votre administrateur Google
+   Cloud d'autoriser les clés de compte de service pour ce projet.
+
+### Étape 3 — Donner accès au Google Sheet
+1. Ouvrez le fichier `.json` avec le Bloc-notes et copiez l'adresse `client_email`
+   (elle ressemble à `archive-lots@creation-lots.iam.gserviceaccount.com`).
+2. Dans le Google Sheet d'archive : **Partager** → collez cette adresse → rôle **Éditeur** →
+   décochez « Envoyer une notification » → **Partager**.
+3. *(Facultatif)* Partagez aussi le Google Sheet des **clients à lots réservés** avec cette
+   adresse, en **Lecteur**. Il pourra alors rester privé, sans lien public.
+
+### Étape 4 — Coller les « secrets » dans Streamlit Cloud
+1. Sur https://share.streamlit.io, ouvrez votre application → **⋮ → Settings → Secrets**.
+2. Copiez le contenu de `.streamlit/secrets.toml.exemple`, puis remplacez chaque valeur par celle
+   du fichier `.json` (même nom de champ). Collez le lien du Google Sheet dans `google_sheet_url`.
+   - Pour `private_key`, recopiez la valeur telle quelle, **avec les `\n`**, entre guillemets.
+3. **Save**. L'application redémarre. En haut du panneau de gauche, vous devez voir :
+   « 💾 Archive et réglages enregistrés dans le Google Sheet d'archive ✅ ».
+
+En cas de problème, un message rouge à cet endroit indique quoi corriger. Le plus souvent, le
+Google Sheet n'a pas été partagé avec l'adresse `client_email`.
+
+### Ce que contient le Google Sheet
+| Onglet | Contenu |
+|---|---|
+| Synthèse | Une ligne par export archivé : création des lots + 9 indicateurs de suivi |
+| Détail bénéficiaires | Opérations intégrées par bénéficiaire et par fiche CEE |
+| Lots par étape | Nombre de lots par étape de contrôle (pour le camembert) |
+| Bureaux en contrôle | Lots en cours de contrôle par bureau : ≤ 5 semaines / > 5 semaines |
+| Graphiques | Camembert et histogramme empilé du **dernier export archivé**, mis à jour à chaque archivage |
+| Paramètres | Pourcentages des bureaux et lien du Google Sheet clients |
+
+Ne renommez pas les onglets. Vous pouvez ajouter vos propres onglets ou graphiques à côté.
+
+### Reprendre l'archive existante
+Avant de mettre la nouvelle version en ligne : onglet **Historique → Sauvegarder ou restaurer
+l'archive → Télécharger l'archive complète**. Une fois le Google Sheet configuré, réimportez ce
+fichier au même endroit. Les dates déjà présentes ne sont pas dupliquées. Si l'archive locale
+existe encore au démarrage, l'application la copie aussi automatiquement dans le Google Sheet.
+
+## Indicateurs de suivi archivés
+| Indicateur | Calcul |
+|---|---|
+| Lots en constitution | Lots uniques (colonne V) à l'étape « En cours de constitution » |
+| Lots demande de coordonnées | Lots uniques à l'étape « En demande de coordonnées » |
+| Lots en cours de contrôle | Lots uniques à l'étape « En cours de contrôle » |
+| Nb d'opé en contrôle | Lignes (N° dossier) à l'étape « En cours de contrôle » |
+| Dont lots en contrôle > 5 semaines | Lots en contrôle dont la date d'envoi (colonne Z) date de plus de 35 jours |
+| Dont opé en contrôle > 5 semaines | Lignes de ces lots |
+| Lots restitués | Lots uniques à l'étape « Lot restitué » |
+| Nb d'OP éligibles | Lignes à l'étape « Eligible » |
+| Nb d'OP intégrables (délai > 2 mois) | Lignes « Eligible » dont la date réelle de réalisation (à défaut prévisionnelle, colonne M) + 12 mois dépasse aujourd'hui + 2 mois |
+
+Les délais sont calculés à la date du jour de l'archivage. Un lot en contrôle sans date
+d'envoi est compté dans « délai respecté ».
 
 ## Règles appliquées (résumé)
 
@@ -84,5 +156,9 @@ constantes sont regroupées en haut du fichier et dans la classe `Parametres`.
 
 - Il faut une colonne contenant le mot **SIREN** et une colonne contenant **nom**, **client**
   ou **raison**.
-- Partage : **Tous les utilisateurs disposant du lien → Lecteur**.
+- Partage, au choix :
+  - avec l'adresse du compte de service, en Lecteur (le fichier reste privé) ;
+  - « Tous les utilisateurs disposant du lien → Lecteur » ;
+  - Fichier → Partager → Publier sur le Web → CSV.
 - Collez le lien dans la barre latérale, puis cliquez sur « Enregistrer le lien ».
+- Autre solution : déposez directement la liste (Excel ou CSV) dans la barre latérale.

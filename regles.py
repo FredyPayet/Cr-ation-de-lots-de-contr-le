@@ -35,11 +35,13 @@ COLONNES = [
     ("H", "Organisme", "organisme"),
     ("I", "SIREN de l'organisme", "siren"),
     ("L", "Date réelle d'engagement", "date_engagement"),
+    ("M", "Date prévisionnelle de réalisation", "date_prev_realisation"),
     ("N", "Date réelle de réalisation", "date_realisation"),
     ("T", "Fiche CEE", "fiche"),
     ("U", "Autres fiches à contrôler", "autres_fiches"),
     ("V", "Lot de contrôle", "lot"),
     ("Y", "Etape de contrôle", "etape"),
+    ("Z", "Date d'envoi du lot de contrôle", "date_envoi"),
     ("AB", "Raison sociale de l'organisme de contrôle", "bureau"),
     ("AH", "Statut AH", "statut_ah"),
     ("BQ", "Opération abandonnée ?", "abandon"),
@@ -51,7 +53,14 @@ STATUT_EXCLU = "Sans objet"
 
 # Étapes qui comptent comme « lots en cours » pour la répartition des bureaux
 ETAPE_CONSTITUTION = "En cours de constitution"
-ETAPES_EN_COURS = [ETAPE_CONSTITUTION, "En demande de coordonnées", "En cours de contrôle"]
+ETAPE_COORDONNEES = "En demande de coordonnées"
+ETAPE_CONTROLE = "En cours de contrôle"
+ETAPE_RESTITUE = "Lot restitué"
+ETAPES_EN_COURS = [ETAPE_CONSTITUTION, ETAPE_COORDONNEES, ETAPE_CONTROLE]
+
+# Indicateurs de suivi
+SEMAINES_RETARD = 5      # lot en contrôle depuis plus de 5 semaines = retard
+DELAI_MIN_MOIS = 2       # délai restant minimum avant la fin du délai de contrôle
 
 # Types de lot (ordre d'affichage). Les bornes sont incluses.
 DEBUT_2019 = pd.Timestamp("2019-04-11")
@@ -242,6 +251,8 @@ def lire_export(fichier) -> pd.DataFrame:
     # Dates
     df["date_engagement"] = convertir_dates(df["date_engagement"])
     df["date_realisation"] = convertir_dates(df["date_realisation"])
+    df["date_prev_realisation"] = convertir_dates(df["date_prev_realisation"])
+    df["date_envoi"] = convertir_dates(df["date_envoi"])
 
     # On retire les lignes vides (export pré-formaté)
     df = df[df["dossier"] != ""].reset_index(drop=True)
@@ -832,10 +843,82 @@ def repartition_bureaux(res: dict, pourcentages: dict) -> pd.DataFrame:
     return t
 
 
-def resume_archive(df: pd.DataFrame, res: dict, date_export: date) -> tuple[dict, pd.DataFrame]:
+def indicateurs_suivi(df: pd.DataFrame, date_jour: date) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     """
-    Prépare la ligne d'archive du jour et le détail par bénéficiaire (colonne
-    « Organisme ») du nombre d'opérations intégrées par fiche CEE.
+    Indicateurs de suivi du contrôle, calculés sur tout l'export :
+      1. lots_en_constitution        : lots uniques (V) à l'étape « En cours de constitution »
+      2. lots_demande_coordonnees    : lots uniques à l'étape « En demande de coordonnées »
+      3. lots_en_controle            : lots uniques à l'étape « En cours de contrôle »
+      4. ops_en_controle             : opérations (N° dossier renseigné) « En cours de contrôle »
+      5. lots_controle_plus_5_sem    : dont lots envoyés depuis plus de 5 semaines
+                                       (« Date d'envoi du lot de contrôle » -> aujourd'hui)
+      6. ops_controle_plus_5_sem     : dont opérations de ces lots
+      7. lots_restitues              : lots uniques à l'étape « Lot restitué »
+      8. ops_eligibles               : opérations à l'étape « Eligible »
+      9. ops_integrables_delai_2_mois: opérations « Eligible » dont la date de réalisation
+                                       (ou à défaut la date prévisionnelle) + 12 mois
+                                       dépasse aujourd'hui + 2 mois
+    Renvoie aussi deux tableaux pour les graphiques :
+      - etapes  : nombre de lots par étape de contrôle (hors « Eligible » et vide)
+      - bureaux : lots « En cours de contrôle » par bureau, délai respecté / > 5 semaines
+    Un lot sans date d'envoi est compté dans « délai respecté ».
+    """
+    aujourdhui = pd.Timestamp(date_jour)
+    etape = df["etape"].map(normaliser)
+    a_un_lot = (df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))
+
+    def nb_lots(nom_etape: str) -> int:
+        return int(df.loc[a_un_lot & (etape == normaliser(nom_etape)), "lot"].nunique())
+
+    # Lots en cours de contrôle et retard (> 5 semaines depuis l'envoi)
+    controle = df[etape == normaliser(ETAPE_CONTROLE)]
+    controle_lots = controle[a_un_lot.loc[controle.index]]
+    envoi_par_lot = controle_lots.groupby("lot")["date_envoi"].min()
+    en_retard = (aujourdhui - envoi_par_lot) > pd.Timedelta(weeks=SEMAINES_RETARD)
+    lots_retard = set(en_retard[en_retard].index)
+
+    # Opérations éligibles et intégrables (délai > 2 mois)
+    eligibles = df[etape == normaliser(ETAPE_ELIGIBLE)]
+    reference = eligibles["date_realisation"].fillna(eligibles["date_prev_realisation"])
+    limite = reference + pd.DateOffset(months=12)
+    integrables = limite > aujourdhui + pd.DateOffset(months=DELAI_MIN_MOIS)
+
+    indicateurs = {
+        "lots_en_constitution": nb_lots(ETAPE_CONSTITUTION),
+        "lots_demande_coordonnees": nb_lots(ETAPE_COORDONNEES),
+        "lots_en_controle": nb_lots(ETAPE_CONTROLE),
+        "ops_en_controle": int((controle["dossier"] != "").sum()),
+        "lots_controle_plus_5_sem": len(lots_retard),
+        "ops_controle_plus_5_sem": int(controle["lot"].isin(lots_retard).sum()),
+        "lots_restitues": nb_lots(ETAPE_RESTITUE),
+        "ops_eligibles": int((eligibles["dossier"] != "").sum()),
+        "ops_integrables_delai_2_mois": int(integrables.sum()),
+    }
+
+    # Graphique 1 : lots par étape de contrôle (hors « Eligible » et vide)
+    hors = df[a_un_lot & ~etape.isin(["", normaliser(ETAPE_ELIGIBLE)])]
+    etapes = (hors.groupby("etape")["lot"].nunique().rename("nb_lots")
+              .sort_values(ascending=False).reset_index())
+
+    # Graphique 2 : lots en cours de contrôle par bureau, délai respecté / > 5 semaines
+    par_lot = controle_lots.drop_duplicates("lot")[["lot", "bureau"]].copy()
+    par_lot["bureau"] = par_lot["bureau"].replace("", "(non renseigné)")
+    par_lot["retard"] = par_lot["lot"].isin(lots_retard)
+    bureaux = pd.DataFrame({"bureau": sorted(set(liste_bureaux(df)) | set(par_lot["bureau"]))})
+    comptes = par_lot.groupby(["bureau", "retard"]).size().unstack(fill_value=0)
+    bureaux["lots_delai_ok"] = bureaux["bureau"].map(comptes.get(False, pd.Series(dtype=int))).fillna(0).astype(int)
+    bureaux["lots_plus_5_sem"] = bureaux["bureau"].map(comptes.get(True, pd.Series(dtype=int))).fillna(0).astype(int)
+    return indicateurs, etapes, bureaux
+
+
+def resume_archive(df: pd.DataFrame, res: dict, date_export: date,
+                   date_jour: date | None = None) -> dict:
+    """
+    Prépare tout ce qui est archivé pour un export :
+      - synthese : une ligne (création des lots + 9 indicateurs de suivi)
+      - detail   : opérations intégrées par bénéficiaire (colonne « Organisme ») et fiche CEE
+      - etapes   : lots par étape de contrôle (camembert)
+      - bureaux  : lots en contrôle par bureau, délai respecté / > 5 semaines (histogramme)
     """
     integres = set(zip(res["ajouts"]["dossier"], res["ajouts"]["fiche"])) | \
         set(zip(res["affectations"]["dossier"], res["affectations"]["fiche"]))
@@ -853,7 +936,11 @@ def resume_archive(df: pd.DataFrame, res: dict, date_export: date) -> tuple[dict
         "nb_operations_ajoutees_lots_existants": int(res["ajouts"]["nb_ops"].sum()),
         "nb_dossiers": int(len({d for d, _ in integres})),
     }
+    indicateurs, etapes, bureaux = indicateurs_suivi(df, date_jour or date.today())
+    synthese.update(indicateurs)
+
     detail = (ops.assign(beneficiaire=ops["organisme"].replace("", "(non renseigné)"))
               .groupby(["beneficiaire", "fiche"]).size().rename("nb_operations").reset_index())
-    detail.insert(0, "date_export", date_export.isoformat())
-    return synthese, detail
+    for t in (detail, etapes, bureaux):
+        t.insert(0, "date_export", date_export.isoformat())
+    return {"synthese": synthese, "detail": detail, "etapes": etapes, "bureaux": bureaux}

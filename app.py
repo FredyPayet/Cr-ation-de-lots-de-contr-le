@@ -69,7 +69,8 @@ VERSION_CODE = hashlib.md5(b"".join(
     open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
 
 # Vérification que tous les fichiers ont bien été mis à jour ensemble
-if not hasattr(regles, "calculer_lots_lies_ajouts"):
+if not (hasattr(regles, "indicateurs_suivi") and hasattr(stockage, "StockageGoogle")
+        and hasattr(exports, "excel_tableau")):
     st.error("⚠️ Mise à jour incomplète : le fichier « regles.py » est d'une ancienne version. "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
              "stockage.py) par ceux de la dernière version, puis redémarrez l'application.")
@@ -97,10 +98,52 @@ def charger_clients(url: str) -> dict:
 # 3. BARRE LATÉRALE : FICHIER ET RÉGLAGES
 # ============================================================================
 
+# --- Où enregistrer l'archive et les réglages ? -------------------------------
+# Google Sheet si les secrets Streamlit contiennent [gcp_service_account] et [archive],
+# sinon dossier local (temporaire sur Streamlit Cloud). Voir README.md.
+
+@st.cache_resource(show_spinner="Connexion au Google Sheet d'archive…")
+def connexion_google(identifiants_json: str, url: str):
+    return stockage.StockageGoogle(json.loads(identifiants_json), url)
+
+
+def secrets_google() -> tuple[dict, str] | None:
+    try:
+        if "gcp_service_account" in st.secrets and "archive" in st.secrets:
+            return dict(st.secrets["gcp_service_account"]), st.secrets["archive"]["google_sheet_url"]
+    except Exception:  # pas de fichier de secrets (utilisation en local)
+        pass
+    return None
+
+
+erreur_stockage = None
+config_google = secrets_google()
+if config_google:
+    try:
+        stockage.utiliser(connexion_google(json.dumps(config_google[0]), config_google[1]))
+        if not st.session_state.get("migration_faite"):
+            st.session_state["migration_faite"] = True
+            copiees = stockage.migrer_archive_locale()
+            if copiees:
+                st.toast(f"{copiees} archive(s) locale(s) copiée(s) dans le Google Sheet ✅")
+    except Exception as e:
+        erreur_stockage = str(e)
+        stockage.utiliser(stockage.StockageLocal())
+
 sauves = stockage.charger_parametres()
 
 with st.sidebar:
     st.markdown("## 📦 Création des lots")
+    infos = stockage.infos_stockage()
+    if infos["mode"] == "google":
+        st.caption(f"💾 Archive et réglages enregistrés dans le "
+                   f"[Google Sheet d'archive]({infos['url']}) ✅")
+    elif erreur_stockage:
+        st.error(f"⚠️ Google Sheet d'archive inaccessible : {erreur_stockage} "
+                 "L'archive est enregistrée temporairement en attendant.")
+    else:
+        st.caption("⚠️ Archive temporaire : le Google Sheet n'est pas configuré "
+                   "(voir le guide dans README.md). Téléchargez l'archive après chaque archivage.")
     st.markdown("### 1. Fichier à traiter")
     fichier = st.file_uploader(
         "Export ODICEE (.xlsx)", type=["xlsx"],
@@ -151,9 +194,23 @@ with st.sidebar:
         url = st.text_input("Lien du Google Sheet (SIREN + nom du client)",
                             value=sauves.get("lien_gsheet", ""),
                             placeholder="https://docs.google.com/spreadsheets/d/…",
-                            help="Le fichier doit être partagé à « Tous les utilisateurs disposant du lien ».")
+                            help="Lien de partage (« Tous les utilisateurs disposant du lien ») "
+                                 "ou lien « Publier sur le Web ».")
         clients = {}
-        if url.strip():
+        fichier_clients = st.file_uploader(
+            "… ou déposez la liste des clients (Excel ou CSV)", type=["xlsx", "csv"],
+            key="fichier_clients",
+            help="À utiliser si le Google Sheet ne peut pas être partagé publiquement. "
+                 "Colonnes attendues : « SIREN » et « Nom » (ou « Client »). "
+                 "Le fichier déposé est prioritaire sur le lien.")
+        if fichier_clients is not None:
+            try:
+                clients = stockage.lire_clients_fichier(fichier_clients)
+                st.caption(f"✅ {len(clients)} client(s) chargé(s) depuis le fichier. "
+                           "Leurs dossiers auront des lots réservés.")
+            except ValueError as e:
+                st.error(str(e))
+        elif url.strip():
             try:
                 clients = charger_clients(url.strip())
                 st.caption(f"✅ {len(clients)} client(s) chargé(s). Leurs dossiers auront des lots réservés.")
@@ -449,21 +506,45 @@ with onglet_creation:
 # 5. BOUTON D'ARCHIVAGE (EN HAUT DE PAGE)
 # ============================================================================
 
-@st.dialog("Archiver les résultats du jour")
-def confirmer_archive(synthese: dict, detail: pd.DataFrame):
-    st.markdown(f"""
-Vous allez archiver l'export du **{date_fr(synthese['date_export'])}** :
-- **{fr(synthese['nb_operations_a_integrer'])}** opérations à intégrer
-- **{fr(synthese['nb_lots_a_creer'])}** nouveaux lots à créer
-- **{fr(synthese['nb_operations_ajoutees_lots_existants'])}** opérations ajoutées aux lots existants
-- le détail pour **{detail['beneficiaire'].nunique()}** bénéficiaire(s)
-
-Une seule archive est possible par date d'export : vérifiez vos réglages avant de confirmer.
+@st.dialog("Archiver les résultats du jour", width="large")
+def confirmer_archive(archive: dict):
+    s = archive["synthese"]
+    ou = ("dans le **Google Sheet d'archive**" if stockage.mode_stockage() == "google"
+          else "**temporairement** (Google Sheet non configuré)")
+    st.markdown(f"Vous allez archiver l'export du **{date_fr(s['date_export'])}** {ou}.")
+    g, d = st.columns(2)
+    g.markdown(f"""
+**Création des lots**
+- **{fr(s['nb_operations_a_integrer'])}** opérations à intégrer
+- **{fr(s['nb_lots_a_creer'])}** nouveaux lots à créer
+- **{fr(s['nb_operations_ajoutees_lots_existants'])}** opérations ajoutées aux lots existants
+- détail pour **{archive['detail']['beneficiaire'].nunique()}** bénéficiaire(s)
 """)
+    d.markdown(f"""
+**Suivi du contrôle**
+- **{fr(s['lots_en_constitution'])}** lots en constitution
+- **{fr(s['lots_demande_coordonnees'])}** lots en demande de coordonnées
+- **{fr(s['lots_en_controle'])}** lots en cours de contrôle ({fr(s['ops_en_controle'])} opé.),
+  dont **{fr(s['lots_controle_plus_5_sem'])}** depuis plus de 5 semaines ({fr(s['ops_controle_plus_5_sem'])} opé.)
+- **{fr(s['lots_restitues'])}** lots restitués
+- **{fr(s['ops_eligibles'])}** opérations éligibles, dont **{fr(s['ops_integrables_delai_2_mois'])}** intégrables (délai > 2 mois)
+""")
+    st.caption("Une seule archive est possible par date d'export : vérifiez vos réglages avant de confirmer.")
     c1, c2 = st.columns(2)
     if c1.button("Confirmer l'archivage", type="primary", width="stretch"):
-        if stockage.archiver(synthese, detail):
-            st.session_state["message_archive"] = f"Résultats du {date_fr(synthese['date_export'])} archivés ✅"
+        try:
+            with st.spinner("Enregistrement…"):
+                ok, avertissement = stockage.archiver(archive)
+        except Exception as e:
+            st.error(f"L'archivage a échoué : {e}. Réessayez dans un instant ; si le problème "
+                     "continue, téléchargez l'archive depuis l'onglet Historique.")
+            return
+        if ok:
+            st.session_state["message_archive"] = (
+                f"Résultats du {date_fr(s['date_export'])} archivés ✅"
+                + (f" — {avertissement}" if avertissement else ""))
+        else:
+            st.session_state["message_archive"] = "Cet export avait déjà été archivé : rien n'a été modifié."
         st.rerun()
     if c2.button("Annuler", width="stretch"):
         st.rerun()
@@ -479,12 +560,12 @@ with zone_haut:
                           width="stretch",
                           help="Une seule archive est possible par date d'export.")
         else:
-            synthese, detail = regles.resume_archive(df, res, date_export)
+            archive_jour = regles.resume_archive(df, res, date_export, date.today())
             if bouton.button(f"🗄️ Archiver les résultats du {date_fr(date_export)}",
                              width="stretch",
-                             disabled=synthese["nb_operations_a_integrer"] == 0,
-                             help="Enregistre le nombre d'opérations, de lots et le détail par bénéficiaire."):
-                confirmer_archive(synthese, detail)
+                             help="Enregistre la création des lots, les indicateurs de suivi du "
+                                  "contrôle et le détail par bénéficiaire."):
+                confirmer_archive(archive_jour)
     if "message_archive" in st.session_state:
         st.success(st.session_state.pop("message_archive"))
 
@@ -532,58 +613,162 @@ with onglet_ecartes:
 # 7. ONGLET « HISTORIQUE »
 # ============================================================================
 
+LIBELLES = {t: dict(cols) for t, (_, cols) in stockage.TABLES.items()}
+
+
+def valeur(ligne, colonne) -> str:
+    """Nombre formaté, ou « — » si l'indicateur n'existait pas encore lors de l'archivage."""
+    v = ligne.get(colonne)
+    return "—" if v is None or pd.isna(v) else fr(v)
+
+
+def couper(texte: str, largeur: int = 14) -> str:
+    """Coupe un libellé long sur plusieurs lignes (axes des graphiques)."""
+    lignes, courante = [], ""
+    for mot in str(texte).split():
+        if courante and len(courante) + 1 + len(mot) > largeur:
+            lignes.append(courante)
+            courante = mot
+        else:
+            courante = f"{courante} {mot}".strip()
+    return "<br>".join(lignes + [courante])
+
+
+PALETTE_ETAPES = ["#1F5FAD", "#6A9BD8", "#E08A00", "#2E7D32", "#8A9BB0", "#7C3AED", "#0E7490", "#B45309"]
+
+
+def graphique_etapes(etapes: pd.DataFrame) -> go.Figure:
+    fig = go.Figure(go.Pie(labels=etapes["etape"], values=etapes["nb_lots"], hole=0.35,
+                           marker=dict(colors=PALETTE_ETAPES, line=dict(color="white", width=2)),
+                           textinfo="percent+value", sort=False,
+                           hovertemplate="%{label} : %{value} lots (%{percent})<extra></extra>"))
+    fig.update_layout(height=380, margin=dict(l=0, r=0, t=10, b=0), font=dict(size=14),
+                      legend=dict(orientation="v"))
+    return fig
+
+
+def graphique_bureaux(bureaux: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    noms = [couper(b) for b in bureaux["bureau"]]
+    for col, nom, coul in [("lots_delai_ok", "Délai respecté (≤ 5 semaines)", COULEURS["apres"]),
+                           ("lots_plus_5_sem", "Plus de 5 semaines", "#C2410C")]:
+        fig.add_bar(x=noms, y=bureaux[col], name=nom, marker_color=coul,
+                    text=[v if v else "" for v in bureaux[col]], textposition="inside",
+                    hovertemplate="%{x} — " + nom + " : %{y} lot(s)<extra></extra>")
+    totaux = bureaux["lots_delai_ok"].fillna(0) + bureaux["lots_plus_5_sem"].fillna(0)
+    fig.add_scatter(x=noms, y=totaux, mode="text", text=[f"<b>{int(t)}</b>" for t in totaux],
+                    textposition="top center", showlegend=False, hoverinfo="skip")
+    fig.update_layout(barmode="stack", height=380, margin=dict(l=0, r=0, t=20, b=0),
+                      font=dict(size=14, color="#1A202C"), plot_bgcolor="white",
+                      legend=dict(orientation="h", y=-0.25), yaxis_title="Lots en cours de contrôle",
+                      xaxis=dict(tickangle=0, tickfont=dict(size=12, color="#1A202C")),
+                      yaxis=dict(gridcolor="#E5E9F0", range=[0, max(totaux.max(), 1) * 1.25]))
+    return fig
+
+
 with onglet_historique:
-    synthese_h, detail_h = stockage.charger_archive()
+    try:
+        archive_h = stockage.charger_archive()
+    except Exception as e:
+        st.error(f"L'archive n'a pas pu être lue : {e}. Réessayez dans un instant.")
+        archive_h = {t: pd.DataFrame(columns=list(LIBELLES[t])) for t in stockage.TABLES}
+    synthese_h = archive_h["synthese"].sort_values("date_export").reset_index(drop=True)
+
+    if stockage.mode_stockage() == "google":
+        st.caption(f"💾 Archive enregistrée dans le [Google Sheet d'archive]({stockage.infos_stockage()['url']}) "
+                   "(onglet « Graphiques » mis à jour à chaque archivage).")
+    else:
+        st.warning("Archive temporaire : elle peut être effacée au redémarrage de l'application. "
+                   "Configurez le Google Sheet (README.md) ou téléchargez l'archive après chaque archivage.")
+
     if synthese_h.empty:
         st.info("Aucune archive pour le moment. Après avoir créé vos lots, cliquez sur "
                 "« Archiver les résultats » en haut de page. Vous pouvez aussi réimporter "
                 "une archive sauvegardée ci-dessous.")
     else:
-        synthese_h = synthese_h.sort_values("date_export")
-        synthese_h["date"] = pd.to_datetime(synthese_h["date_export"])
-        derniere = synthese_h.iloc[-1]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Archives enregistrées", fr(len(synthese_h)), border=True)
-        c2.metric(f"Opérations intégrées le {date_fr(derniere['date'])}",
-                  fr(derniere["nb_operations_a_integrer"]), border=True)
-        c3.metric(f"Lots créés le {date_fr(derniere['date'])}", fr(derniere["nb_lots_a_creer"]),
-                  border=True)
+        dates = synthese_h["date_export"].tolist()[::-1]   # plus récente d'abord
 
-        etiquettes = synthese_h["date"].dt.strftime("%d/%m/%Y")
+        # ---------------- Situation d'un export ----------------
+        st.markdown("#### Situation d'un export archivé")
+        choix_date = st.selectbox("Export", dates, format_func=lambda d: f"Export du {date_fr(d)}",
+                                  key=f"date_situation_{dates[0]}")  # revient au plus récent après un archivage
+        ligne = synthese_h[synthese_h["date_export"] == choix_date].iloc[0].to_dict()
+
+        st.markdown("**Création des lots**")
+        c = st.columns(4)
+        c[0].metric("Archives enregistrées", fr(len(synthese_h)), border=True)
+        c[1].metric("Opérations intégrées", valeur(ligne, "nb_operations_a_integrer"), border=True)
+        c[2].metric("Lots créés", valeur(ligne, "nb_lots_a_creer"), border=True)
+        c[3].metric("Ajoutées aux lots existants", valeur(ligne, "nb_operations_ajoutees_lots_existants"),
+                    border=True)
+
+        st.markdown("**Suivi du contrôle**")
+        c = st.columns(4)
+        c[0].metric("Lots en constitution", valeur(ligne, "lots_en_constitution"), border=True)
+        c[1].metric("Lots en demande de coordonnées", valeur(ligne, "lots_demande_coordonnees"), border=True)
+        c[2].metric("Lots en cours de contrôle", valeur(ligne, "lots_en_controle"), border=True,
+                    help="Dont lots envoyés depuis plus de 5 semaines (date d'envoi du lot → date d'archivage).")
+        c[3].metric("Lots restitués", valeur(ligne, "lots_restitues"), border=True)
+        c = st.columns(4)
+        c[0].metric("Lots en contrôle > 5 semaines", valeur(ligne, "lots_controle_plus_5_sem"), border=True)
+        c[1].metric("Opé. en contrôle", valeur(ligne, "ops_en_controle"), border=True,
+                    help="Nombre de lignes (N° dossier) à l'étape « En cours de contrôle ».")
+        c[2].metric("Opé. en contrôle > 5 semaines", valeur(ligne, "ops_controle_plus_5_sem"), border=True)
+        c[3].metric("Opé. éligibles / intégrables",
+                    f"{valeur(ligne, 'ops_eligibles')} / {valeur(ligne, 'ops_integrables_delai_2_mois')}",
+                    border=True,
+                    help="Intégrables = date de réalisation (ou prévisionnelle) + 12 mois au-delà "
+                         "d'aujourd'hui + 2 mois.")
+
+        etapes = archive_h["etapes"][archive_h["etapes"]["date_export"] == choix_date]
+        bureaux_h = archive_h["bureaux"][archive_h["bureaux"]["date_export"] == choix_date]
+        g, d = st.columns(2)
+        with g:
+            st.markdown("**Répartition des lots par étape de contrôle**")
+            if etapes.empty:
+                st.info("Pas de données pour cet export (archivé avec une version précédente).")
+            else:
+                st.plotly_chart(graphique_etapes(etapes), width="stretch")
+        with d:
+            st.markdown("**Lots en cours de contrôle par bureau**")
+            if bureaux_h.empty:
+                st.info("Pas de données pour cet export (archivé avec une version précédente).")
+            else:
+                st.plotly_chart(graphique_bureaux(bureaux_h), width="stretch")
+
+        # ---------------- Évolution ----------------
+        st.markdown("#### Évolution d'un export à l'autre")
+        etiquettes = pd.to_datetime(synthese_h["date_export"]).dt.strftime("%d/%m/%Y")
         fig = go.Figure()
         fig.add_bar(x=etiquettes, y=synthese_h["nb_operations_a_integrer"],
                     name="Opérations à intégrer", marker_color=COULEURS["apres"],
-                    text=[fr(v) for v in synthese_h["nb_operations_a_integrer"]], textposition="outside")
+                    text=[valeur({"v": v}, "v") for v in synthese_h["nb_operations_a_integrer"]],
+                    textposition="outside")
         fig.add_scatter(x=etiquettes, y=synthese_h["nb_lots_a_creer"], name="Lots à créer",
-                        yaxis="y2", mode="lines+markers+text", line=dict(color=COULEURS["objectif"], width=3),
-                        marker=dict(size=10),
-                        hovertemplate="%{x} : %{y} lots<extra></extra>")
-        fig.update_layout(height=360, margin=dict(l=0, r=0, t=30, b=0), font=dict(size=14),
+                        yaxis="y2", mode="lines+markers", line=dict(color=COULEURS["objectif"], width=3),
+                        marker=dict(size=10), hovertemplate="%{x} : %{y} lots<extra></extra>")
+        fig.update_layout(height=340, margin=dict(l=0, r=0, t=30, b=0), font=dict(size=14),
                           legend=dict(orientation="h", y=-0.2), plot_bgcolor="white",
                           xaxis=dict(type="category"),
                           yaxis=dict(title="Opérations", gridcolor="#E5E9F0", rangemode="tozero"),
                           yaxis2=dict(title="Lots", overlaying="y", side="right", showgrid=False,
-                                      range=[0, synthese_h["nb_lots_a_creer"].max() * 1.6 + 1]))
+                                      range=[0, float(synthese_h["nb_lots_a_creer"].max() or 0) * 1.6 + 1]))
         if len(synthese_h) < 6:
             fig.update_traces(width=0.35, selector=dict(type="bar"))
         st.plotly_chart(fig, width="stretch")
 
-        st.dataframe(
-            synthese_h.assign(date_export=etiquettes).drop(columns="date")
-            .iloc[::-1],
-            hide_index=True, width="stretch",
-            column_config={
-                "date_export": "Date de l'export", "date_archivage": "Archivé le",
-                "nb_operations_a_integrer": "Opérations à intégrer", "nb_lots_a_creer": "Lots à créer",
-                "nb_operations_ajoutees_lots_existants": "Ajoutées aux lots existants",
-                "nb_dossiers": "Dossiers"})
+        vue_synthese = synthese_h.assign(date_export=etiquettes).iloc[::-1] \
+            .rename(columns=LIBELLES["synthese"])
+        st.dataframe(vue_synthese, hide_index=True, width="stretch")
 
+        # ---------------- Détail par bénéficiaire ----------------
         st.markdown("#### Détail par bénéficiaire")
         TOUTES = "Toutes les dates conservées"
-        dates = synthese_h.sort_values("date_export", ascending=False)["date_export"].tolist()
         choix = st.selectbox("Date de l'export", [TOUTES] + dates,
                              format_func=lambda x: x if x == TOUTES else date_fr(x))
+        detail_h = archive_h["detail"]
         d = detail_h if choix == TOUTES else detail_h[detail_h["date_export"] == choix]
+        pivot = pd.DataFrame()
         if d.empty:
             st.info("Pas de détail par bénéficiaire pour cette date.")
         else:
@@ -597,26 +782,26 @@ with onglet_historique:
             pivot.columns.name = None
             st.dataframe(pivot, hide_index=True, width="stretch")
 
-            synthese_export = (synthese_h if choix == TOUTES
-                               else synthese_h[synthese_h["date_export"] == choix])
-            synthese_export = synthese_export.assign(
-                date_export=synthese_export["date"].dt.strftime("%d/%m/%Y")).drop(columns="date") \
-                .rename(columns={
-                    "date_export": "Date de l'export", "date_archivage": "Archivé le",
-                    "nb_operations_a_integrer": "Opérations à intégrer", "nb_lots_a_creer": "Lots à créer",
-                    "nb_operations_ajoutees_lots_existants": "Ajoutées aux lots existants",
-                    "nb_dossiers": "Dossiers"})
-            nom = "toutes_dates" if choix == TOUTES else choix
-            st.download_button(
-                "⬇️ Télécharger cet historique (Excel)",
-                data=exports.excel_tableau({"Synthèse": synthese_export, "Détail bénéficiaires": pivot}),
-                file_name=f"Historique_lots_{nom}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary", width="stretch")
+        # Export Excel de l'historique (toutes les dates ou la date choisie)
+        def filtre(t):
+            tab = archive_h[t] if choix == TOUTES else archive_h[t][archive_h[t]["date_export"] == choix]
+            tab = tab.assign(date_export=pd.to_datetime(tab["date_export"]).dt.strftime("%d/%m/%Y"))
+            return tab.rename(columns=LIBELLES[t])
+
+        onglets = {"Synthèse": filtre("synthese"), "Détail bénéficiaires": pivot,
+                   "Lots par étape": filtre("etapes"), "Bureaux en contrôle": filtre("bureaux")}
+        nom = "toutes_dates" if choix == TOUTES else choix
+        st.download_button(
+            "⬇️ Télécharger cet historique (Excel)",
+            data=exports.excel_tableau({k: v for k, v in onglets.items() if not v.empty}),
+            file_name=f"Historique_lots_{nom}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary", width="stretch")
 
     with st.expander("💾 Sauvegarder ou restaurer l'archive"):
-        st.caption("Sur Streamlit Cloud, l'archive peut être effacée lors d'un redémarrage de "
-                   "l'application. Téléchargez-la régulièrement pour ne rien perdre.")
+        st.caption("Le fichier téléchargé contient toute l'archive. Il peut être réimporté à tout "
+                   "moment (y compris une archive d'une version précédente) : les dates déjà "
+                   "présentes sont ignorées.")
         if not synthese_h.empty:
             st.download_button("⬇️ Télécharger l'archive complète (Excel)", data=stockage.archive_en_excel(),
                                file_name=f"Archive_lots_{date.today():%Y-%m-%d}.xlsx",
@@ -626,9 +811,11 @@ with onglet_historique:
                                            key="import_archive")
         if fichier_archive is not None and st.button("Importer cette archive", type="primary"):
             try:
-                ajoutees, ignorees = stockage.importer_archive(fichier_archive)
-                st.success(f"{ajoutees} date(s) ajoutée(s)"
-                           + (f", {ignorees} déjà présente(s) ignorée(s)." if ignorees else "."))
+                with st.spinner("Import…"):
+                    ajoutees, ignorees = stockage.importer_archive(fichier_archive)
+                st.session_state["message_archive"] = (
+                    f"Import terminé : {ajoutees} date(s) ajoutée(s)"
+                    + (f", {ignorees} déjà présente(s) ignorée(s)." if ignorees else "."))
                 st.rerun()
             except Exception as e:
                 st.error(f"Import impossible : {e}")
