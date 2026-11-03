@@ -555,7 +555,25 @@ with zone_haut:
     titre.title("Création des lots de contrôle")
     if df is not None and res is not None:
         date_iso = date_export.isoformat()
-        if stockage.date_deja_archivee(date_iso):
+        if stockage.date_deja_archivee(date_iso) and stockage.archive_incomplete(date_iso):
+            # Export archivé avec une version précédente : on peut ajouter les indicateurs
+            # de suivi sans modifier les chiffres déjà archivés.
+            if bouton.button(f"➕ Compléter l'archive du {date_fr(date_export)}",
+                             type="primary", width="stretch",
+                             help="Cet export a été archivé avant l'ajout des indicateurs de suivi. "
+                                  "Ce bouton les ajoute (ainsi que les graphiques) sans modifier "
+                                  "les chiffres de création des lots déjà archivés."):
+                archive_jour = regles.resume_archive(df, res, date_export, date.today())
+                try:
+                    with st.spinner("Ajout des indicateurs de suivi…"):
+                        ok, avertissement = stockage.completer_archive(archive_jour)
+                    st.session_state["message_archive"] = (
+                        f"Archive du {date_fr(date_export)} complétée avec les indicateurs de suivi ✅"
+                        + (f" — {avertissement}" if avertissement else ""))
+                except Exception as e:
+                    st.session_state["message_archive"] = f"⚠️ L'archive n'a pas pu être complétée : {e}"
+                st.rerun()
+        elif stockage.date_deja_archivee(date_iso):
             bouton.button(f"✅ Export du {date_fr(date_export)} déjà archivé", disabled=True,
                           width="stretch",
                           help="Une seule archive est possible par date d'export.")
@@ -703,6 +721,12 @@ with onglet_historique:
                     border=True)
 
         st.markdown("**Suivi du contrôle**")
+        if pd.isna(ligne.get("lots_en_constitution")):
+            st.info(f"ℹ️ L'export du {date_fr(choix_date)} a été archivé avant l'ajout des indicateurs "
+                    "de suivi, d'où les « — ». Pour les ajouter : rechargez ce même export "
+                    f"(Export_Controle_lots_de_travaux_BS_{choix_date}.xlsx) dans le panneau de gauche, "
+                    "puis cliquez sur « ➕ Compléter l'archive » en haut de page. Les chiffres déjà "
+                    "archivés ne seront pas modifiés.")
         c = st.columns(4)
         c[0].metric("Lots en constitution", valeur(ligne, "lots_en_constitution"), border=True)
         c[1].metric("Lots en demande de coordonnées", valeur(ligne, "lots_demande_coordonnees"), border=True)

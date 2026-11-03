@@ -157,6 +157,16 @@ class StockageLocal:
                          ignore_index=True)
         tout.sort_values("date_export").to_csv(DOSSIER / f"archive_{table}.csv", index=False)
 
+    def completer_ligne(self, table: str, date_iso: str, valeurs: dict) -> None:
+        """Remplit les cellules vides de la ligne d'une date (sans modifier les autres)."""
+        tout = self.lire(table)
+        masque = tout["date_export"] == date_iso
+        for col, v in valeurs.items():
+            vides = masque & tout[col].isna()
+            tout.loc[vides, col] = v
+        DOSSIER.mkdir(exist_ok=True)
+        tout.to_csv(DOSSIER / f"archive_{table}.csv", index=False)
+
     def maj_graphiques(self, archive: dict) -> None:
         pass  # les graphiques sont affichés dans l'application
 
@@ -233,6 +243,13 @@ class StockageGoogle:
     def ajouter(self, table: str, lignes: pd.DataFrame) -> None:
         if lignes.empty:
             return
+        ws, entete = self._onglet_et_entete(table)
+        donnees = _vers_libelles(lignes, table)
+        ws.append_rows([[_cellule(r.get(c)) for c in entete] for r in donnees.to_dict("records")],
+                       value_input_option="RAW")
+
+    def _onglet_et_entete(self, table: str):
+        """Onglet de la table et sa ligne d'en-tête (complétée si de nouvelles colonnes existent)."""
         titre, colonnes = TABLES[table]
         libelles = [l for _, l in colonnes]
         ws = self._onglet(titre, libelles)
@@ -246,9 +263,24 @@ class StockageGoogle:
             if len(entete) > ws.col_count:
                 ws.add_cols(len(entete) - ws.col_count)
             ws.update(values=[entete], range_name="A1")
-        donnees = _vers_libelles(lignes, table)
-        ws.append_rows([[_cellule(r.get(c)) for c in entete] for r in donnees.to_dict("records")],
-                       value_input_option="RAW")
+        return ws, entete
+
+    def completer_ligne(self, table: str, date_iso: str, valeurs: dict) -> None:
+        """Remplit les cellules vides de la ligne d'une date (sans modifier les autres)."""
+        ws, entete = self._onglet_et_entete(table)
+        libelles = dict(TABLES[table][1])
+        lignes = ws.get_all_values()
+        col_date = entete.index(libelles["date_export"])
+        mises_a_jour = []
+        for i, ligne in enumerate(lignes[1:], start=2):
+            if col_date < len(ligne) and _date_iso(ligne[col_date]) == date_iso:
+                for col, v in valeurs.items():
+                    j = entete.index(libelles[col])
+                    if j >= len(ligne) or ligne[j] == "":
+                        mises_a_jour.append({"range": self._gspread.utils.rowcol_to_a1(i, j + 1),
+                                             "values": [[_cellule(v)]]})
+        if mises_a_jour:
+            ws.batch_update(mises_a_jour, value_input_option="RAW")
 
     # --- graphiques ---------------------------------------------------------
     def maj_graphiques(self, archive: dict) -> None:
@@ -424,6 +456,43 @@ def archiver(archive_jour: dict) -> tuple[bool, str | None]:
     _stockage.ajouter("synthese", pd.DataFrame([archive_jour["synthese"]]))
     for t in ("detail", "etapes", "bureaux"):
         _stockage.ajouter(t, archive_jour[t])
+    _cache.pop("archive", None)
+    return True, _maj_graphiques()
+
+
+# Indicateurs ajoutés en version 4 (absents des exports archivés avant)
+INDICATEURS_SUIVI = ["lots_en_constitution", "lots_demande_coordonnees", "lots_en_controle",
+                     "ops_en_controle", "lots_controle_plus_5_sem", "ops_controle_plus_5_sem",
+                     "lots_restitues", "ops_eligibles", "ops_integrables_delai_2_mois"]
+
+
+def archive_incomplete(date_iso: str) -> bool:
+    """Vrai si la date est archivée mais sans les indicateurs de suivi ou les graphiques."""
+    archive = charger_archive()
+    ligne = archive["synthese"][archive["synthese"]["date_export"] == date_iso]
+    if ligne.empty:
+        return False
+    manque_indicateurs = ligne[INDICATEURS_SUIVI].isna().any(axis=None)
+    manque_graphiques = (archive["etapes"]["date_export"] == date_iso).sum() == 0 \
+        and (archive["bureaux"]["date_export"] == date_iso).sum() == 0
+    return bool(manque_indicateurs or manque_graphiques)
+
+
+def completer_archive(archive_jour: dict) -> tuple[bool, str | None]:
+    """
+    Complète un export déjà archivé avec les indicateurs de suivi et les données des
+    graphiques, SANS modifier les chiffres déjà enregistrés (création des lots, détail).
+    Renvoie (complété ?, avertissement éventuel).
+    """
+    date_iso = archive_jour["synthese"]["date_export"]
+    archive = charger_archive(forcer=True)
+    if date_iso not in set(archive["synthese"]["date_export"]):
+        return False, None
+    valeurs = {k: archive_jour["synthese"][k] for k in INDICATEURS_SUIVI}
+    _stockage.completer_ligne("synthese", date_iso, valeurs)
+    for t in ("etapes", "bureaux"):
+        if (archive[t]["date_export"] == date_iso).sum() == 0:
+            _stockage.ajouter(t, archive_jour[t])
     _cache.pop("archive", None)
     return True, _maj_graphiques()
 
