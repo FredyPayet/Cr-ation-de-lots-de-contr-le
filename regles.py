@@ -40,8 +40,10 @@ COLONNES = [
     ("T", "Fiche CEE", "fiche"),
     ("U", "Autres fiches à contrôler", "autres_fiches"),
     ("V", "Lot de contrôle", "lot"),
+    ("W", "Date de création", "date_creation_lot"),
     ("Y", "Etape de contrôle", "etape"),
     ("Z", "Date d'envoi du lot de contrôle", "date_envoi"),
+    ("AA", "Date de retour du lot de contrôle", "date_retour"),
     ("AB", "Raison sociale de l'organisme de contrôle", "bureau"),
     ("AH", "Statut AH", "statut_ah"),
     ("BQ", "Opération abandonnée ?", "abandon"),
@@ -253,6 +255,8 @@ def lire_export(fichier) -> pd.DataFrame:
     df["date_realisation"] = convertir_dates(df["date_realisation"])
     df["date_prev_realisation"] = convertir_dates(df["date_prev_realisation"])
     df["date_envoi"] = convertir_dates(df["date_envoi"])
+    df["date_creation_lot"] = convertir_dates(df["date_creation_lot"])
+    df["date_retour"] = convertir_dates(df["date_retour"])
 
     # On retire les lignes vides (export pré-formaté)
     df = df[df["dossier"] != ""].reset_index(drop=True)
@@ -891,6 +895,10 @@ def indicateurs_suivi(df: pd.DataFrame, date_jour: date) -> tuple[dict, pd.DataF
         "lots_controle_plus_5_sem": len(lots_retard),
         "ops_controle_plus_5_sem": int(controle["lot"].isin(lots_retard).sum()),
         "lots_restitues": nb_lots(ETAPE_RESTITUE),
+        # Opérations des stocks du schéma de flux (lignes à ces étapes)
+        "ops_en_creation": int(((etape.isin([normaliser(ETAPE_CONSTITUTION), normaliser(ETAPE_COORDONNEES)]))
+                                & (df["dossier"] != "")).sum()),
+        "ops_restitues": int(((etape == normaliser(ETAPE_RESTITUE)) & (df["dossier"] != "")).sum()),
         "ops_eligibles": int((eligibles["dossier"] != "").sum()),
         "ops_integrables_delai_2_mois": int(integrables.sum()),
     }
@@ -909,6 +917,96 @@ def indicateurs_suivi(df: pd.DataFrame, date_jour: date) -> tuple[dict, pd.DataF
     bureaux["lots_delai_ok"] = bureaux["bureau"].map(comptes.get(False, pd.Series(dtype=int))).fillna(0).astype(int)
     bureaux["lots_plus_5_sem"] = bureaux["bureau"].map(comptes.get(True, pd.Series(dtype=int))).fillna(0).astype(int)
     return indicateurs, etapes, bureaux
+
+
+# ----------------------------------------------------------------------------
+# FLUX D'ACTIVITÉ : lots créés / envoyés / restitués le jour ouvré précédent
+# ----------------------------------------------------------------------------
+
+def _paques(annee: int) -> date:
+    """Date du dimanche de Pâques (algorithme grégorien)."""
+    a, b, c = annee % 19, annee // 100, annee % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    mois = (h + l - 7 * m + 114) // 31
+    jour = (h + l - 7 * m + 114) % 31 + 1
+    return date(annee, mois, jour)
+
+
+def jours_feries(annee: int) -> set[date]:
+    """Jours fériés en France métropolitaine (dont lundi de Pâques, Ascension, lundi de Pentecôte)."""
+    p = pd.Timestamp(_paques(annee))
+    fixes = [(1, 1), (5, 1), (5, 8), (7, 14), (8, 15), (11, 1), (11, 11), (12, 25)]
+    return {date(annee, m, j) for m, j in fixes} | {
+        (p + pd.Timedelta(days=n)).date() for n in (1, 39, 50)}
+
+
+def jour_ouvre_precedent(d: date) -> date:
+    """Jour ouvré (lundi-vendredi, hors fériés) qui précède la date. Lundi -> vendredi."""
+    j = pd.Timestamp(d).date() - pd.Timedelta(days=1)
+    while j.weekday() >= 5 or j in jours_feries(j.year):
+        j -= pd.Timedelta(days=1)
+    return j
+
+
+def lots_et_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Une ligne par lot unique (colonne V) : date de création (W), date d'envoi (Z),
+    date de retour (AA) et nombre d'opérations (nombre de lignes du lot).
+    Si un lot a plusieurs dates différentes, la plus ancienne est retenue.
+    """
+    avec_lot = df[(df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))]
+    return avec_lot.groupby("lot").agg(
+        date_creation=("date_creation_lot", "min"),
+        date_envoi=("date_envoi", "min"),
+        date_retour=("date_retour", "min"),
+        nb_ops=("lot", "size"),
+    ).reset_index()
+
+
+ETAPES_FLUX = [("creation", "date_creation", "Lots créés"),
+               ("envoi", "date_envoi", "Lots envoyés"),
+               ("retour", "date_retour", "Lots restitués")]
+
+
+def indicateurs_flux(df: pd.DataFrame, date_export: date) -> dict:
+    """
+    Flux du jour ouvré précédant la date de l'export :
+    lots (et opérations) créés, envoyés et restitués ce jour-là.
+    """
+    jour = pd.Timestamp(jour_ouvre_precedent(date_export))
+    lots = lots_et_dates(df)
+    resultat = {"date_reference_flux": jour.date().isoformat()}
+    for cle, col, _ in ETAPES_FLUX:
+        du_jour = lots[lots[col] == jour]
+        resultat[f"flux_lots_{cle}"] = int(len(du_jour))
+        resultat[f"flux_ops_{cle}"] = int(du_jour["nb_ops"].sum())
+    return resultat
+
+
+def flux_par_jour(df: pd.DataFrame, date_export: date, nb_jours: int = 20) -> pd.DataFrame:
+    """
+    Flux des `nb_jours` derniers jours ouvrés avant la date de l'export, calculé
+    directement à partir des dates de l'export (pas besoin d'archives).
+    Colonnes : jour, puis lots_/ops_ creation, envoi, retour.
+    """
+    jours, j = [], date_export
+    for _ in range(nb_jours):
+        j = jour_ouvre_precedent(j)
+        jours.append(pd.Timestamp(j))
+    jours = jours[::-1]
+    lots = lots_et_dates(df)
+    t = pd.DataFrame({"jour": jours})
+    for cle, col, _ in ETAPES_FLUX:
+        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"))
+        t[f"lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
+        t[f"ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
+    return t
 
 
 def resume_archive(df: pd.DataFrame, res: dict, date_export: date,
@@ -938,6 +1036,7 @@ def resume_archive(df: pd.DataFrame, res: dict, date_export: date,
     }
     indicateurs, etapes, bureaux = indicateurs_suivi(df, date_jour or date.today())
     synthese.update(indicateurs)
+    synthese.update(indicateurs_flux(df, date_export))
 
     detail = (ops.assign(beneficiaire=ops["organisme"].replace("", "(non renseigné)"))
               .groupby(["beneficiaire", "fiche"]).size().rename("nb_operations").reset_index())

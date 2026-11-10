@@ -83,11 +83,11 @@ Google Sheet n'a pas été partagé avec l'adresse `client_email`.
 ### Ce que contient le Google Sheet
 | Onglet | Contenu |
 |---|---|
-| Synthèse | Une ligne par export archivé : création des lots + 9 indicateurs de suivi |
+| Synthèse | Une ligne par export archivé : création des lots, 9 indicateurs de suivi et flux d'activité |
 | Détail bénéficiaires | Opérations intégrées par bénéficiaire et par fiche CEE |
 | Lots par étape | Nombre de lots par étape de contrôle (pour le camembert) |
 | Bureaux en contrôle | Lots en cours de contrôle par bureau : ≤ 5 semaines / > 5 semaines |
-| Graphiques | Camembert et histogramme empilé du **dernier export archivé**, mis à jour à chaque archivage |
+| Graphiques | Camembert et histogramme empilé du **dernier export archivé**, plus l'histogramme du flux d'activité (un jour par export archivé), mis à jour à chaque archivage |
 | Paramètres | Pourcentages des bureaux et lien du Google Sheet clients |
 
 Ne renommez pas les onglets. Vous pouvez ajouter vos propres onglets ou graphiques à côté.
@@ -113,6 +113,31 @@ existe encore au démarrage, l'application la copie aussi automatiquement dans l
 
 Les délais sont calculés à la date du jour de l'archivage. Un lot en contrôle sans date
 d'envoi est compté dans « délai respecté ».
+
+## Flux d'activité archivé
+Pour chaque lot unique (colonne V), l'application lit la date de création (W), la date d'envoi
+(Z) et la date de retour (AA). Si un lot a plusieurs dates, elle garde la plus ancienne. Le
+jour de référence est le **jour ouvré qui précède la date de l'export**. Un export du lundi
+renvoie au vendredi, et les jours fériés français sont sautés, lundi de Pentecôte compris.
+
+| Indicateur | Calcul |
+|---|---|
+| Flux : lots créés / opé. | Lots dont la date de création = jour de référence, et nombre de lignes de ces lots |
+| Flux : lots envoyés / opé. | Lots dont la date d'envoi = jour de référence, et nombre de lignes |
+| Flux : lots restitués / opé. | Lots dont la date de retour = jour de référence, et nombre de lignes |
+
+Le flux dépend seulement de la date de l'export : il est identique quel que soit le jour où
+vous archivez.
+
+Dans l'onglet Historique, le **schéma « Flux du contrôle »** relie trois stocks de lots, avec
+les opérations correspondantes. Les flèches portent les flux du jour de référence :
+lots créés → **Lots en création** (« En cours de constitution » + « En demande de
+coordonnées ») → lots envoyés → **Lots en cours de contrôle** → lots restitués →
+**Lots à traiter** (« Lot restitué »). Dans l'onglet Historique, le graphique « Flux d'activité » montre les
+20 derniers jours ouvrés, calculés directement à partir de l'export chargé. Dans le Google
+Sheet, l'onglet « Graphiques » montre un jour par export archivé (30 derniers).
+Pour un export archivé avant cette version : rechargez-le, puis cliquez sur
+« ➕ Compléter l'archive ».
 
 ## Règles appliquées (résumé)
 

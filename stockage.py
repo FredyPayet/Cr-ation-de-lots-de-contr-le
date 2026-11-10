@@ -58,6 +58,15 @@ TABLES = {
         ("lots_restitues", "Lots restitués"),
         ("ops_eligibles", "Nb d'OP éligibles"),
         ("ops_integrables_delai_2_mois", "Nb d'OP intégrables (délai > 2 mois)"),
+        ("ops_en_creation", "Nb d'opé en création (constitution + coordonnées)"),
+        ("ops_restitues", "Nb d'opé restituées (lots à traiter)"),
+        ("date_reference_flux", "Flux : jour de référence"),
+        ("flux_lots_creation", "Flux : lots créés"),
+        ("flux_ops_creation", "Flux : opé. des lots créés"),
+        ("flux_lots_envoi", "Flux : lots envoyés"),
+        ("flux_ops_envoi", "Flux : opé. des lots envoyés"),
+        ("flux_lots_retour", "Flux : lots restitués"),
+        ("flux_ops_retour", "Flux : opé. des lots restitués"),
     ]),
     "detail": ("Détail bénéficiaires", [
         ("date_export", "Date de l'export"),
@@ -77,7 +86,8 @@ TABLES = {
         ("lots_plus_5_sem", "Lots > 5 semaines"),
     ]),
 }
-COLONNES_TEXTE = {"date_export", "date_archivage", "beneficiaire", "fiche", "etape", "bureau"}
+COLONNES_TEXTE = {"date_export", "date_archivage", "beneficiaire", "fiche", "etape", "bureau",
+                  "date_reference_flux"}
 ONGLET_GRAPHIQUES = "Graphiques"
 ONGLET_PARAMETRES = "Paramètres"
 
@@ -162,7 +172,7 @@ class StockageLocal:
         tout = self.lire(table)
         masque = tout["date_export"] == date_iso
         for col, v in valeurs.items():
-            vides = masque & tout[col].isna()
+            vides = masque & (tout[col].isna() | (tout[col].astype(str) == ""))
             tout.loc[vides, col] = v
         DOSSIER.mkdir(exist_ok=True)
         tout.to_csv(DOSSIER / f"archive_{table}.csv", index=False)
@@ -355,6 +365,39 @@ class StockageGoogle:
                                   "colorStyle": {"rgbColor": {"red": 0.85, "green": 0.33, "blue": 0.10}}},
                              ]}},
                 "position": position(21, 7)}}})
+
+        # Flux d'activité : un jour de référence par export archivé (30 derniers)
+        flux = synthese[synthese["flux_lots_creation"].notna()].sort_values("date_export").tail(30)
+        if not flux.empty:
+            debut = 3 + max(len(lignes_e), len(lignes_b)) + 3   # ligne (index à 0) du tableau
+            entete_flux = ["Jour de référence", "Lots créés", "Opé. des lots créés", "Lots envoyés",
+                           "Opé. des lots envoyés", "Lots restitués", "Opé. des lots restitués"]
+            lignes_f = [[pd.Timestamp(r["date_reference_flux"]).strftime("%d/%m/%Y")
+                         if r["date_reference_flux"] else pd.Timestamp(r["date_export"]).strftime("%d/%m/%Y")]
+                        + [_cellule(r[c]) for c in ("flux_lots_creation", "flux_ops_creation",
+                                                    "flux_lots_envoi", "flux_ops_envoi",
+                                                    "flux_lots_retour", "flux_ops_retour")]
+                        for r in flux.to_dict("records")]
+            ws.update(values=[["Flux d'activité (jour ouvré précédant chaque export archivé)"]],
+                      range_name=f"A{debut}")
+            ws.update(values=[entete_flux] + lignes_f, range_name=f"A{debut + 1}")
+            ws.format(f"A{debut}", {"textFormat": {"bold": True, "fontSize": 12}})
+            ws.format(f"A{debut + 1}:G{debut + 1}", {"textFormat": {"bold": True}})
+            l0, l1 = debut, debut + 1 + len(lignes_f)   # en-tête (index à 0) -> dernière ligne
+            couleurs = [(0.12, 0.37, 0.68), (0.88, 0.54, 0.0), (0.18, 0.49, 0.20)]
+            requetes.append({"addChart": {"chart": {
+                "spec": {"title": "Flux d'activité : lots créés, envoyés et restitués par jour",
+                         "basicChart": {
+                             "chartType": "COLUMN", "legendPosition": "BOTTOM_LEGEND",
+                             "headerCount": 1,
+                             "axis": [{"position": "BOTTOM_AXIS", "title": "Jour ouvré de référence"},
+                                      {"position": "LEFT_AXIS", "title": "Nombre de lots"}],
+                             "domains": [{"domain": plage(l0, l1, 0, 1)}],
+                             "series": [
+                                 {"series": plage(l0, l1, c, c + 1), "targetAxis": "LEFT_AXIS",
+                                  "colorStyle": {"rgbColor": {"red": r, "green": g, "blue": b}}}
+                                 for c, (r, g, b) in zip((1, 3, 5), couleurs)]}},
+                "position": position(42, 7)}}})
         if requetes:
             self.classeur.batch_update({"requests": requetes})
 
@@ -460,10 +503,15 @@ def archiver(archive_jour: dict) -> tuple[bool, str | None]:
     return True, _maj_graphiques()
 
 
-# Indicateurs ajoutés en version 4 (absents des exports archivés avant)
+# Indicateurs ajoutés après coup (versions 4 et 5) : absents des exports archivés avant,
+# ils peuvent être ajoutés avec le bouton « Compléter l'archive ».
+INDICATEURS_FLUX = ["flux_lots_creation", "flux_ops_creation", "flux_lots_envoi",
+                    "flux_ops_envoi", "flux_lots_retour", "flux_ops_retour"]
 INDICATEURS_SUIVI = ["lots_en_constitution", "lots_demande_coordonnees", "lots_en_controle",
                      "ops_en_controle", "lots_controle_plus_5_sem", "ops_controle_plus_5_sem",
-                     "lots_restitues", "ops_eligibles", "ops_integrables_delai_2_mois"]
+                     "lots_restitues", "ops_eligibles", "ops_integrables_delai_2_mois",
+                     "ops_en_creation", "ops_restitues", *INDICATEURS_FLUX]
+INDICATEURS_A_COMPLETER = INDICATEURS_SUIVI + ["date_reference_flux"]
 
 
 def archive_incomplete(date_iso: str) -> bool:
@@ -488,7 +536,7 @@ def completer_archive(archive_jour: dict) -> tuple[bool, str | None]:
     archive = charger_archive(forcer=True)
     if date_iso not in set(archive["synthese"]["date_export"]):
         return False, None
-    valeurs = {k: archive_jour["synthese"][k] for k in INDICATEURS_SUIVI}
+    valeurs = {k: archive_jour["synthese"][k] for k in INDICATEURS_A_COMPLETER}
     _stockage.completer_ligne("synthese", date_iso, valeurs)
     for t in ("etapes", "bureaux"):
         if (archive[t]["date_export"] == date_iso).sum() == 0:

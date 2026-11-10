@@ -47,6 +47,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 COULEURS = {"actuel": "#8A9BB0", "apres": "#1F5FAD", "objectif": "#E08A00"}
+JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 FORMAT_DATE = "DD/MM/YYYY"
 
 
@@ -69,7 +70,7 @@ VERSION_CODE = hashlib.md5(b"".join(
     open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
 
 # Vérification que tous les fichiers ont bien été mis à jour ensemble
-if not (hasattr(regles, "indicateurs_suivi") and hasattr(stockage, "StockageGoogle")
+if not (hasattr(regles, "indicateurs_flux") and hasattr(stockage, "INDICATEURS_FLUX")
         and hasattr(exports, "excel_tableau")):
     st.error("⚠️ Mise à jour incomplète : le fichier « regles.py » est d'une ancienne version. "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
@@ -528,6 +529,11 @@ def confirmer_archive(archive: dict):
   dont **{fr(s['lots_controle_plus_5_sem'])}** depuis plus de 5 semaines ({fr(s['ops_controle_plus_5_sem'])} opé.)
 - **{fr(s['lots_restitues'])}** lots restitués
 - **{fr(s['ops_eligibles'])}** opérations éligibles, dont **{fr(s['ops_integrables_delai_2_mois'])}** intégrables (délai > 2 mois)
+
+**Flux du {date_fr(s['date_reference_flux'])}** (jour ouvré précédent)
+- 🆕 {fr(s['flux_lots_creation'])} lots créés ({fr(s['flux_ops_creation'])} opé.)
+- 📤 {fr(s['flux_lots_envoi'])} lots envoyés ({fr(s['flux_ops_envoi'])} opé.)
+- 📥 {fr(s['flux_lots_retour'])} lots restitués ({fr(s['flux_ops_retour'])} opé.)
 """)
     st.caption("Une seule archive est possible par date d'export : vérifiez vos réglages avant de confirmer.")
     c1, c2 = st.columns(2)
@@ -560,7 +566,8 @@ with zone_haut:
             # de suivi sans modifier les chiffres déjà archivés.
             if bouton.button(f"➕ Compléter l'archive du {date_fr(date_export)}",
                              type="primary", width="stretch",
-                             help="Cet export a été archivé avant l'ajout des indicateurs de suivi. "
+                             help="Cet export a été archivé avant l'ajout des indicateurs de suivi "
+                                  "ou du flux d'activité. "
                                   "Ce bouton les ajoute (ainsi que les graphiques) sans modifier "
                                   "les chiffres de création des lots déjà archivés."):
                 archive_jour = regles.resume_archive(df, res, date_export, date.today())
@@ -568,7 +575,7 @@ with zone_haut:
                     with st.spinner("Ajout des indicateurs de suivi…"):
                         ok, avertissement = stockage.completer_archive(archive_jour)
                     st.session_state["message_archive"] = (
-                        f"Archive du {date_fr(date_export)} complétée avec les indicateurs de suivi ✅"
+                        f"Archive du {date_fr(date_export)} complétée (indicateurs de suivi et flux) ✅"
                         + (f" — {avertissement}" if avertissement else ""))
                 except Exception as e:
                     st.session_state["message_archive"] = f"⚠️ L'archive n'a pas pu être complétée : {e}"
@@ -653,6 +660,135 @@ def couper(texte: str, largeur: int = 14) -> str:
 
 
 PALETTE_ETAPES = ["#1F5FAD", "#6A9BD8", "#E08A00", "#2E7D32", "#8A9BB0", "#7C3AED", "#0E7490", "#B45309"]
+
+
+# Styles du schéma de flux (chaîne simple : pas d'accolades à doubler)
+CSS_FLUX = """
+<style>
+.fx-zone { container-type: inline-size; }
+.fx-carte { background: linear-gradient(135deg, #F8FAFD 0%, #EEF3FA 100%); border: 1px solid #E2E8F0;
+  border-radius: 20px; padding: 22px 18px 18px; margin-bottom: 8px; }
+.fx-entete { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap;
+  gap: 6px; margin: 0 6px 14px; }
+.fx-entete-titre { font-size: 15px; font-weight: 700; color: #1A202C; letter-spacing: .2px; }
+.fx-entete-jour { font-size: 14px; color: #4A5568; }
+.fx-schema { display: flex; align-items: flex-start; justify-content: center; }
+
+/* Étapes (cercles) */
+.fx-etape { flex: 0 0 172px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.fx-rond { width: 164px; height: 164px; border-radius: 50%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; position: relative;
+  background: radial-gradient(circle at 30% 25%, #FFFFFF 0%, var(--fond) 75%);
+  border: 6px solid var(--c); box-shadow: 0 10px 28px var(--ombre), inset 0 0 0 6px #FFFFFF; }
+.fx-icone { font-size: 24px; line-height: 1; margin-bottom: 2px; }
+.fx-grand { font-size: 46px; font-weight: 800; color: #1A202C; line-height: 1; letter-spacing: -1px; }
+.fx-unite { font-size: 14px; color: #4A5568; margin-top: 2px; }
+.fx-pastille { margin-top: 6px; font-size: 13px; font-weight: 700; color: var(--c); background: #FFFFFF;
+  border: 1px solid var(--c); border-radius: 999px; padding: 2px 10px; }
+.fx-nom { margin-top: 12px; font-size: 16px; font-weight: 700; color: var(--texte); }
+.fx-detail { font-size: 13px; color: #4A5568; line-height: 1.3; max-width: 170px; }
+.fx-alerte { margin-top: 6px; font-size: 13px; font-weight: 700; color: #9A3412; background: #FFF4E5;
+  border: 1px solid #F6C48A; border-radius: 999px; padding: 2px 10px; }
+
+/* Flux (flèches animées) */
+.fx-flux { flex: 1 1 120px; min-width: 112px; max-width: 150px; height: 164px; position: relative;
+  display: flex; align-items: center; justify-content: center; }
+.fx-badge { position: absolute; bottom: calc(50% + 16px); left: 50%; transform: translateX(-50%);
+  background: #FFFFFF; border-radius: 12px; padding: 6px 10px; text-align: center; white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(26, 32, 44, .10); border: 1px solid #E2E8F0; }
+.fx-badge-titre { font-size: 12px; font-weight: 600; color: #4A5568; text-transform: uppercase;
+  letter-spacing: .4px; }
+.fx-badge-chiffre { font-size: 20px; font-weight: 800; color: #1A202C; line-height: 1.15; }
+.fx-badge-ops { font-size: 13px; color: #4A5568; }
+.fx-trait { stroke-dasharray: 7 6; animation: fx-defile 0.9s linear infinite; }
+@keyframes fx-defile { to { stroke-dashoffset: -26; } }
+@media (prefers-reduced-motion: reduce) { .fx-trait { animation: none; } }
+.fx-v { display: none; }
+
+/* Zone étroite (tablette, mobile) : schéma de haut en bas */
+@container (max-width: 960px) {
+  .fx-schema { flex-direction: column; align-items: center; }
+  .fx-flux { flex: 0 0 auto; height: auto; max-width: none; flex-direction: column; padding: 10px 0; }
+  .fx-badge { position: static; transform: none; margin-bottom: 6px; }
+  .fx-h { display: none; }
+  .fx-v { display: block; }
+}
+</style>
+"""
+
+ETAPES_SCHEMA = {  # couleur principale, fond du cercle, ombre, couleur du titre
+    "creation": ("#1F5FAD", "#E6EEFA", "rgba(31, 95, 173, .22)", "#1A4C8B"),
+    "controle": ("#D97706", "#FDF0DC", "rgba(217, 119, 6, .22)", "#92400E"),
+    "traiter": ("#2E7D32", "#E3F2E4", "rgba(46, 125, 50, .22)", "#1B5E20"),
+}
+
+
+def schema_flux(ligne: dict, jour_ref: str) -> str:
+    """
+    Schéma du flux du contrôle (HTML) : 3 cercles = stocks de lots, flèches animées = flux
+    du jour ouvré de référence. De gauche à droite sur ordinateur, de haut en bas sur mobile.
+      Lots créés → [Lots en création] → Lots envoyés → [En cours de contrôle]
+                 → Lots restitués → [Lots à traiter]
+    """
+    jour = date_fr(jour_ref) if jour_ref else "—"
+
+    def nb(col):
+        return valeur(ligne, col)
+
+    def fleche(n, titre, icone, cle, de, vers):
+        """Badge (lots + opérations du jour) posé sur une flèche dégradée et animée."""
+        c1, c2 = ETAPES_SCHEMA[de][0] if de else "#94A3B8", ETAPES_SCHEMA[vers][0]
+        return (
+            f'<div class="fx-flux">'
+            f'<div class="fx-badge"><div class="fx-badge-titre">{icone} {titre}</div>'
+            f'<div class="fx-badge-chiffre">{nb(f"flux_lots_{cle}")} lots</div>'
+            f'<div class="fx-badge-ops">{nb(f"flux_ops_{cle}")} opé.</div></div>'
+            # flèche horizontale
+            f'<svg class="fx-h" width="100%" height="28" viewBox="0 0 130 28" preserveAspectRatio="none" aria-hidden="true">'
+            f'<defs><linearGradient id="fxg{n}" gradientUnits="userSpaceOnUse" x1="4" y1="14" x2="112" y2="14">'
+            f'<stop offset="0" stop-color="{c1}"/>'
+            f'<stop offset="1" stop-color="{c2}"/></linearGradient></defs>'
+            f'<line class="fx-trait" x1="4" y1="14" x2="112" y2="14" stroke="url(#fxg{n})" stroke-width="5" stroke-linecap="round"/>'
+            f'<path d="M110 4 L127 14 L110 24 Z" fill="{c2}"/></svg>'
+            # flèche verticale (mobile)
+            f'<svg class="fx-v" width="28" height="64" viewBox="0 0 28 64" aria-hidden="true">'
+            f'<defs><linearGradient id="fxv{n}" gradientUnits="userSpaceOnUse" x1="14" y1="2" x2="14" y2="48">'
+            f'<stop offset="0" stop-color="{c1}"/>'
+            f'<stop offset="1" stop-color="{c2}"/></linearGradient></defs>'
+            f'<line class="fx-trait" x1="14" y1="2" x2="14" y2="48" stroke="url(#fxv{n})" stroke-width="5" stroke-linecap="round"/>'
+            f'<path d="M4 46 L14 62 L24 46 Z" fill="{c2}"/></svg>'
+            f'</div>')
+
+    def cercle(cle, icone, nom, lots, ops, detail, extra=""):
+        c, fond, ombre, texte = ETAPES_SCHEMA[cle]
+        return (
+            f'<div class="fx-etape" style="--c:{c};--fond:{fond};--ombre:{ombre};--texte:{texte}">'
+            f'<div class="fx-rond"><div class="fx-icone">{icone}</div>'
+            f'<div class="fx-grand">{lots}</div><div class="fx-unite">lots</div>'
+            f'<div class="fx-pastille">{ops} opé.</div></div>'
+            f'<div class="fx-nom">{nom}</div><div class="fx-detail">{detail}</div>{extra}</div>')
+
+    lots_creation = "—"
+    if not pd.isna(ligne.get("lots_en_constitution")) and not pd.isna(ligne.get("lots_demande_coordonnees")):
+        lots_creation = fr(ligne["lots_en_constitution"] + ligne["lots_demande_coordonnees"])
+    retard = ("" if pd.isna(ligne.get("lots_controle_plus_5_sem")) else
+              f'<div class="fx-alerte">⏱️ {nb("lots_controle_plus_5_sem")} lots &gt; 5 semaines</div>')
+
+    return CSS_FLUX.replace("\n", "") + (
+        f'<div class="fx-zone"><div class="fx-carte" role="group" aria-label="Schéma du flux du contrôle">'
+        f'<div class="fx-entete"><span class="fx-entete-titre">Stock de lots et activité</span>'
+        f'<span class="fx-entete-jour">Flèches : activité du <b>{jour}</b> (jour ouvré précédent)</span></div>'
+        f'<div class="fx-schema">'
+        + fleche(1, "Créés", "🆕", "creation", None, "creation")
+        + cercle("creation", "🧩", "Lots en création", lots_creation, nb("ops_en_creation"),
+                 "Constitution + demande de coordonnées")
+        + fleche(2, "Envoyés", "📤", "envoi", "creation", "controle")
+        + cercle("controle", "🔍", "En cours de contrôle", nb("lots_en_controle"), nb("ops_en_controle"),
+                 "Chez les bureaux de contrôle", retard)
+        + fleche(3, "Restitués", "📥", "retour", "controle", "traiter")
+        + cercle("traiter", "✅", "Lots à traiter", nb("lots_restitues"), nb("ops_restitues"),
+                 "Étape « Lot restitué »")
+        + '</div></div></div>')
 
 
 def graphique_etapes(etapes: pd.DataFrame) -> go.Figure:
@@ -759,6 +895,58 @@ with onglet_historique:
                 st.info("Pas de données pour cet export (archivé avec une version précédente).")
             else:
                 st.plotly_chart(graphique_bureaux(bureaux_h), width="stretch")
+
+        # ---------------- Flux du contrôle (schéma) ----------------
+        st.markdown("#### Flux du contrôle")
+        jour_ref = ligne.get("date_reference_flux") or ""
+        if pd.isna(ligne.get("flux_lots_creation")) or pd.isna(ligne.get("ops_en_creation")):
+            st.info(f"ℹ️ Le flux n'est pas complet pour l'export du {date_fr(choix_date)}. Rechargez cet "
+                    "export puis cliquez sur « ➕ Compléter l'archive » en haut de page.")
+        st.markdown(schema_flux(ligne, jour_ref), unsafe_allow_html=True)
+        st.caption(f"Cercles : stock de lots dans l'export du {date_fr(choix_date)}. Flèches : lots "
+                   "créés, envoyés et restitués le jour ouvré précédent. Opé. = nombre de lignes "
+                   "(opérations) de ces lots.")
+
+        # Graphique : les 20 derniers jours ouvrés (depuis l'export chargé, sinon depuis l'archive)
+        unite = st.radio("Afficher le flux en", ["Lots", "Opérations"], horizontal=True,
+                         key="unite_flux")
+        prefixe = "lots" if unite == "Lots" else "ops"
+        if df is not None and date_export is not None:
+            flux_t = regles.flux_par_jour(df, date_export, 20)
+            source_flux = (f"Calculé à partir de l'export chargé (du {date_fr(date_export)}) : "
+                           "20 derniers jours ouvrés.")
+        else:
+            arch_flux = synthese_h[synthese_h["flux_lots_creation"].notna()].copy()
+            flux_t = pd.DataFrame({"jour": pd.to_datetime(arch_flux["date_reference_flux"])})
+            for cle in ("creation", "envoi", "retour"):
+                flux_t[f"lots_{cle}"] = arch_flux[f"flux_lots_{cle}"].values
+                flux_t[f"ops_{cle}"] = arch_flux[f"flux_ops_{cle}"].values
+            source_flux = ("Calculé à partir des exports archivés (un jour par archive). Chargez un "
+                           "export pour voir les 20 derniers jours ouvrés.")
+        if flux_t.empty:
+            st.info("Pas encore de flux à afficher.")
+        else:
+            fig = go.Figure()
+            for cle, nom, coul in [("creation", "Lots créés", COULEURS["apres"]),
+                                   ("envoi", "Lots envoyés", COULEURS["objectif"]),
+                                   ("retour", "Lots restitués", "#2E7D32")]:
+                fig.add_bar(
+                    x=[f"{JOURS_FR[j.weekday()]} {j:%d/%m}" for j in flux_t["jour"]],
+                    y=flux_t[f"{prefixe}_{cle}"],
+                    name=nom, marker_color=coul,
+                    customdata=flux_t[[f"lots_{cle}", f"ops_{cle}"]].values,
+                    hovertemplate="%{x} — " + nom + " : %{customdata[0]} lots, "
+                                  "%{customdata[1]} opérations<extra></extra>")
+            fig.update_layout(barmode="group", height=380, margin=dict(l=0, r=0, t=10, b=0),
+                              font=dict(size=14, color="#1A202C"), plot_bgcolor="white",
+                              legend=dict(orientation="h", y=-0.25),
+                              yaxis=dict(title=f"Nombre de {unite.lower()}", gridcolor="#E5E9F0"),
+                              xaxis=dict(type="category", tickangle=-45))
+            st.plotly_chart(fig, width="stretch")
+            totaux = {cle: int(flux_t[f"{prefixe}_{cle}"].sum()) for cle in ("creation", "envoi", "retour")}
+            st.caption(f"{source_flux} Sur la période : {fr(totaux['creation'])} créés, "
+                       f"{fr(totaux['envoi'])} envoyés, {fr(totaux['retour'])} restitués "
+                       f"({unite.lower()}).")
 
         # ---------------- Évolution ----------------
         st.markdown("#### Évolution d'un export à l'autre")
