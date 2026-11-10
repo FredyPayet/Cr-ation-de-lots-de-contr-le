@@ -12,6 +12,8 @@ aux bureaux de contrôle, et qui archive les résultats de chaque export.
 | `regles.py` | **Toutes les règles métier** (éligibilité, types de lot, construction des lots, bureaux) |
 | `exports.py` | Fichiers Excel téléchargés (un fichier par fiche CEE, un onglet par lot) |
 | `stockage.py` | Archive et réglages (Google Sheet ou dossier local), lecture de la liste des clients |
+| `rapport_pdf.py` | Rapport PDF hebdomadaire (schéma du flux, indicateurs, graphiques) |
+| `messagerie.py` | Mail hebdomadaire : texte formel et création du brouillon Gmail |
 | `requirements.txt` | Bibliothèques Python nécessaires |
 | `.streamlit/config.toml` | Couleurs et taille maximale des fichiers chargés |
 | `.streamlit/secrets.toml.exemple` | Modèle des « secrets » pour le Google Sheet d'archive |
@@ -97,6 +99,40 @@ Avant de mettre la nouvelle version en ligne : onglet **Historique → Sauvegard
 l'archive → Télécharger l'archive complète**. Une fois le Google Sheet configuré, réimportez ce
 fichier au même endroit. Les dates déjà présentes ne sont pas dupliquées. Si l'archive locale
 existe encore au démarrage, l'application la copie aussi automatiquement dans le Google Sheet.
+
+## Mail hebdomadaire aux managers (brouillon Gmail)
+
+L'onglet **📧 Rapport hebdomadaire** prépare un mail formel. Il contient les chiffres clés de
+l'export, leur évolution depuis l'export précédent et le flux de la veille, avec en pièce
+jointe un **PDF** : schéma du flux, tableau des indicateurs, camembert, histogramme des
+bureaux, flux sur 20 jours ouvrés et évolution des stocks.
+Le mail est déposé dans les **Brouillons** de la boîte Gmail. Rien n'est envoyé : vous le
+relisez dans Gmail, puis vous cliquez sur Envoyer.
+
+**Chaque semaine** :
+1. Chargez l'export et archivez-le.
+2. Ouvrez l'onglet 📧 et vérifiez les destinataires et le texte.
+3. Cliquez sur **Créer le brouillon dans Gmail**.
+4. Dans Gmail → Brouillons, relisez puis envoyez.
+
+### Configuration (≈ 5 minutes, une seule fois)
+La connexion utilise un **mot de passe d'application** Google : un code de 16 lettres, propre
+à cette application. Ce n'est pas votre mot de passe habituel, et vous pouvez le révoquer à
+tout moment.
+1. Connectez-vous à **fredy.payet.ps@gmail.com**, puis ouvrez https://myaccount.google.com/security.
+2. Activez la **Validation en deux étapes** si ce n'est pas déjà fait (obligatoire).
+3. Ouvrez https://myaccount.google.com/apppasswords → nom « Création des lots » → **Créer**.
+   Copiez le code de 16 lettres affiché.
+4. Dans Streamlit Cloud → **Settings → Secrets**, ajoutez :
+   ```toml
+   [gmail]
+   adresse = "fredy.payet.ps@gmail.com"
+   mot_de_passe_application = "abcd efgh ijkl mnop"
+   ```
+5. **Save**. L'onglet 📧 affiche alors « Boîte d'envoi : fredy.payet.ps@gmail.com ✅ ».
+
+Les destinataires (À / Copie) et la signature s'enregistrent avec le bouton prévu. Avec le
+Google Sheet d'archive, ils sont conservés dans l'onglet « Paramètres ».
 
 ## Indicateurs de suivi archivés
 | Indicateur | Calcul |

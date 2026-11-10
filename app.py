@@ -27,6 +27,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import exports
+import messagerie
+import rapport_pdf
 import regles
 import stockage
 
@@ -70,7 +72,7 @@ VERSION_CODE = hashlib.md5(b"".join(
     open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
 
 # Vérification que tous les fichiers ont bien été mis à jour ensemble
-if not (hasattr(regles, "indicateurs_flux") and hasattr(stockage, "INDICATEURS_FLUX")
+if not (hasattr(regles, "indicateurs_flux") and hasattr(stockage, "INDICATEURS_FLUX") and hasattr(messagerie, "creer_brouillon")
         and hasattr(exports, "excel_tableau")):
     st.error("⚠️ Mise à jour incomplète : le fichier « regles.py » est d'une ancienne version. "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
@@ -106,6 +108,18 @@ def charger_clients(url: str) -> dict:
 @st.cache_resource(show_spinner="Connexion au Google Sheet d'archive…")
 def connexion_google(identifiants_json: str, url: str):
     return stockage.StockageGoogle(json.loads(identifiants_json), url)
+
+
+def secrets_gmail() -> tuple[str, str] | None:
+    """Adresse Gmail et mot de passe d'application (secrets Streamlit, section [gmail])."""
+    try:
+        if "gmail" in st.secrets:
+            g = st.secrets["gmail"]
+            if g.get("adresse") and g.get("mot_de_passe_application"):
+                return g["adresse"], g["mot_de_passe_application"]
+    except Exception:
+        pass
+    return None
 
 
 def secrets_google() -> tuple[dict, str] | None:
@@ -253,8 +267,8 @@ with st.sidebar:
 # ============================================================================
 
 zone_haut = st.container()
-onglet_creation, onglet_ecartes, onglet_historique = st.tabs(
-    ["📦 Création des lots", "🚫 Opérations écartées", "📈 Historique"])
+onglet_creation, onglet_ecartes, onglet_historique, onglet_mail = st.tabs(
+    ["📦 Création des lots", "🚫 Opérations écartées", "📈 Historique", "📧 Rapport hebdomadaire"])
 
 res = None
 
@@ -1031,3 +1045,137 @@ with onglet_historique:
                 st.rerun()
             except Exception as e:
                 st.error(f"Import impossible : {e}")
+
+
+# ============================================================================
+# 8. ONGLET « RAPPORT HEBDOMADAIRE » (mail aux managers, déposé en brouillon Gmail)
+# ============================================================================
+
+@st.cache_data(show_spinner="Préparation du rapport PDF…")
+def preparer_pdf(_archive: dict, cle_archive: str, date_iso: str, _flux: pd.DataFrame | None,
+                 cle_flux: str, auteur: str) -> bytes:
+    return rapport_pdf.generer_pdf(_archive, date_iso, _flux, auteur)
+
+
+with onglet_mail:
+    gmail = secrets_gmail()
+    st.markdown("Préparez le **mail hebdomadaire** pour vos managers, avec le récapitulatif des chiffres "
+                "et les graphiques en **PDF**. Le mail est déposé dans vos **brouillons Gmail** : rien "
+                "n'est envoyé tant que vous ne cliquez pas sur « Envoyer » dans Gmail.")
+    if gmail:
+        st.caption(f"📮 Boîte d'envoi : **{gmail[0]}** ✅")
+    else:
+        st.warning("Gmail n'est pas encore configuré : vous pouvez préparer le mail et télécharger le PDF, "
+                   "mais pas créer le brouillon. Ajoutez la section [gmail] aux secrets Streamlit "
+                   "(adresse + mot de passe d'application, voir README.md).")
+
+    try:
+        archive_m = stockage.charger_archive()
+    except Exception as e:
+        archive_m = None
+        st.error(f"L'archive n'a pas pu être lue : {e}")
+    synthese_m = archive_m["synthese"].sort_values("date_export") if archive_m else pd.DataFrame()
+
+    if synthese_m.empty:
+        st.info("Le rapport se construit à partir d'un export archivé. Chargez l'export de la semaine, "
+                "puis cliquez sur « Archiver les résultats » en haut de page.")
+    else:
+        parametres_mail = stockage.charger_parametres()
+        dates_m = synthese_m["date_export"].tolist()[::-1]
+
+        # ---------------- 1. Export présenté ----------------
+        st.markdown("##### 1. Export présenté")
+        date_mail = st.selectbox("Export", dates_m, format_func=lambda d: f"Export du {date_fr(d)}",
+                                 key=f"date_mail_{dates_m[0]}")
+        ligne_m = synthese_m[synthese_m["date_export"] == date_mail].iloc[0].to_dict()
+        precedents = synthese_m[synthese_m["date_export"] < date_mail]
+        avant_m = precedents.iloc[-1].to_dict() if not precedents.empty else None
+        if pd.isna(ligne_m.get("lots_en_constitution")) or pd.isna(ligne_m.get("flux_lots_creation")):
+            st.warning(f"Certains indicateurs manquent pour l'export du {date_fr(date_mail)} (archivé avec une "
+                       "version précédente) : ils apparaîtront en « — ». Rechargez cet export et cliquez sur "
+                       "« ➕ Compléter l'archive » en haut de page.")
+
+        # ---------------- 2. Destinataires ----------------
+        st.markdown("##### 2. Destinataires")
+        c1, c2 = st.columns(2)
+        texte_a = c1.text_area("À (une adresse par ligne)", value=parametres_mail.get("mail_a", ""),
+                               height=120, placeholder="manager1@entreprise.fr\nmanager2@entreprise.fr")
+        texte_cc = c2.text_area("Copie (facultatif)", value=parametres_mail.get("mail_cc", ""),
+                                height=120, placeholder="collegue@entreprise.fr")
+        a_valides, a_invalides = messagerie.lire_adresses(texte_a)
+        cc_valides, cc_invalides = messagerie.lire_adresses(texte_cc)
+        if a_invalides or cc_invalides:
+            st.error("Adresse(s) à corriger : " + ", ".join(f"« {x} »" for x in a_invalides + cc_invalides)
+                     + ". Format attendu : prenom.nom@entreprise.fr")
+        elif not a_valides:
+            st.info("Indiquez au moins une adresse dans « À ».")
+        else:
+            st.caption(f"✅ {len(a_valides)} destinataire(s)" + (f" + {len(cc_valides)} en copie" if cc_valides else ""))
+        signature = st.text_input("Signature", value=parametres_mail.get("signature", "Fredy PAYET"))
+        if st.button("Enregistrer les destinataires et la signature",
+                     help="Ils seront proposés automatiquement les semaines suivantes."):
+            try:
+                stockage.enregistrer_parametres({"mail_a": "\n".join(a_valides), "mail_cc": "\n".join(cc_valides),
+                                                 "signature": signature})
+                st.toast("Destinataires enregistrés ✅")
+            except Exception as e:
+                st.error(f"Enregistrement impossible : {e}")
+
+        # ---------------- 3. Contenu du mail ----------------
+        st.markdown("##### 3. Mail")
+        cle_objet, cle_corps = f"objet_{date_mail}", f"corps_{date_mail}"
+        if cle_objet not in st.session_state:
+            st.session_state[cle_objet] = messagerie.objet_par_defaut(date_mail)
+        if cle_corps not in st.session_state:
+            st.session_state[cle_corps] = messagerie.corps_par_defaut(ligne_m, avant_m, signature)
+        st.text_input("Objet", key=cle_objet)
+        st.text_area("Texte du mail (modifiable)", key=cle_corps, height=460)
+        if st.button("↺ Rétablir le texte proposé",
+                     help="Remplace le texte par la version générée à partir des chiffres (vos modifications "
+                          "seront perdues)."):
+            st.session_state[cle_objet] = messagerie.objet_par_defaut(date_mail)
+            st.session_state[cle_corps] = messagerie.corps_par_defaut(ligne_m, avant_m, signature)
+            st.rerun()
+
+        # ---------------- 4. Pièce jointe et brouillon ----------------
+        st.markdown("##### 4. Pièce jointe et brouillon")
+        flux_m = None
+        if df is not None and date_export is not None and date_export.isoformat() == date_mail:
+            flux_m = regles.flux_par_jour(df, date_export, 20)
+        semaine_m = pd.Timestamp(date_mail).isocalendar().week
+        nom_pdf = f"Suivi_controle_lots_S{semaine_m}_{date_mail}.pdf"
+        try:
+            cle_archive = hashlib.md5(pd.util.hash_pandas_object(synthese_m.astype(str)).values.tobytes()
+                                      + str(len(archive_m["etapes"]) + len(archive_m["bureaux"])).encode()).hexdigest()
+            pdf = preparer_pdf(archive_m, cle_archive, date_mail, flux_m,
+                               "20j" if flux_m is not None else "archive", signature)
+        except Exception as e:
+            pdf = None
+            st.error(f"Le PDF n'a pas pu être créé : {e}")
+        if flux_m is None:
+            st.caption("ℹ️ Pour un graphique de flux sur 20 jours ouvrés dans le PDF, chargez l'export de cette "
+                       "date dans le panneau de gauche (sinon : un jour par export archivé).")
+
+        g, d = st.columns(2)
+        if pdf:
+            g.download_button(f"⬇️ Aperçu du PDF ({nom_pdf})", data=pdf, file_name=nom_pdf,
+                              mime="application/pdf", width="stretch")
+        pret = bool(gmail and a_valides and not a_invalides and not cc_invalides and pdf
+                    and st.session_state[cle_objet].strip() and st.session_state[cle_corps].strip())
+        if d.button("📝 Créer le brouillon dans Gmail", type="primary", width="stretch", disabled=not pret,
+                    help="Dépose le mail (avec le PDF) dans vos brouillons Gmail. Il ne sera pas envoyé."):
+            try:
+                with st.spinner("Création du brouillon dans Gmail…"):
+                    message = messagerie.construire_message(
+                        gmail[0], a_valides, cc_valides, st.session_state[cle_objet].strip(),
+                        st.session_state[cle_corps], pdf, nom_pdf)
+                    dossier = messagerie.creer_brouillon(gmail[0], gmail[1], message)
+                st.success(f"✅ Brouillon créé dans « {dossier} » de {gmail[0]}, avec le PDF en pièce jointe. "
+                           f"[Ouvrir les brouillons Gmail](https://mail.google.com/mail/u/?authuser={gmail[0]}#drafts) "
+                           "pour le relire puis l'envoyer.")
+            except messagerie.ErreurMessagerie as e:
+                st.error(f"⚠️ {e}")
+            except Exception as e:
+                st.error(f"⚠️ Le brouillon n'a pas pu être créé : {e}")
+        if not pret and gmail:
+            st.caption("Le bouton s'active quand au moins un destinataire valide, un objet et un texte sont renseignés.")
