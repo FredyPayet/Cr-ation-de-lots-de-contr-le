@@ -101,19 +101,20 @@ if not (hasattr(regles, "indicateurs_flux") and hasattr(stockage, "INDICATEURS_F
     st.stop()
 
 
-@st.cache_data(show_spinner="Lecture du fichier Excel… (quelques secondes pour un gros export)")
+# max_entries : limite la mémoire utilisée (Streamlit Cloud gratuit ≈ 1 Go)
+@st.cache_data(show_spinner="Lecture du fichier Excel… (quelques secondes pour un gros export)", max_entries=2)
 def charger_export(contenu: bytes, version: str = VERSION_CODE) -> pd.DataFrame:
     return regles.lire_export(io.BytesIO(contenu))
 
 
-@st.cache_data(show_spinner="Calcul des lots…")
+@st.cache_data(show_spinner="Calcul des lots…", max_entries=4)
 def calculer(_df: pd.DataFrame, cle_fichier: str, cle_params: str, _p: regles.Parametres,
              cle_ajouts: str, _ajouts: pd.DataFrame | None, version: str = VERSION_CODE) -> dict:
     # Les paramètres précédés de « _ » ne servent pas de clé : les clés texte suffisent.
     return regles.calculer(_df, _p, _ajouts)
 
 
-@st.cache_data(ttl=600, show_spinner="Lecture du Google Sheet des clients…")
+@st.cache_data(ttl=600, show_spinner="Lecture du Google Sheet des clients…", max_entries=2)
 def charger_clients(url: str) -> dict:
     return stockage.lire_clients_gsheet(url)
 
@@ -1085,7 +1086,7 @@ with onglet_historique:
 # 8. ONGLET « RAPPORT HEBDOMADAIRE » (mail aux managers, déposé en brouillon Gmail)
 # ============================================================================
 
-@st.cache_data(show_spinner="Préparation du rapport PDF…")
+@st.cache_data(show_spinner="Préparation du rapport PDF…", max_entries=2)
 def preparer_pdf(_archive: dict, cle_archive: str, date_iso: str, _flux: pd.DataFrame | None,
                  cle_flux: str, auteur: str) -> bytes:
     return rapport_pdf.generer_pdf(_archive, date_iso, _flux, auteur)

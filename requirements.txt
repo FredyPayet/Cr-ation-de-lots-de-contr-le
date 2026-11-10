@@ -5,5 +5,5 @@ python-calamine>=0.2
 plotly>=5.20
 gspread>=6.0
 google-auth>=2.20
-matplotlib>=3.8
+matplotlib>=3.10
 reportlab>=4.0
