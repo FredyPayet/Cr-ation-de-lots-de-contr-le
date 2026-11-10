@@ -989,6 +989,41 @@ def indicateurs_flux(df: pd.DataFrame, date_export: date) -> dict:
     return resultat
 
 
+def indicateurs_flux_periode(df: pd.DataFrame, debut: date, fin: date) -> dict:
+    """
+    Flux entre deux exports : lots (et opérations) dont la date de création, d'envoi ou
+    de retour est comprise entre `debut` (date de l'export précédent) et `fin` (date de
+    l'export actuel), BORNES INCLUSES (>= debut et <= fin).
+    """
+    d0, d1 = pd.Timestamp(debut), pd.Timestamp(fin)
+    lots = lots_et_dates(df)
+    resultat = {"periode_debut": pd.Timestamp(debut).date().isoformat(),
+                "periode_fin": pd.Timestamp(fin).date().isoformat()}
+    for cle, col, _ in ETAPES_FLUX:
+        dans_periode = lots[lots[col].between(d0, d1, inclusive="both")]
+        resultat[f"flux_periode_lots_{cle}"] = int(len(dans_periode))
+        resultat[f"flux_periode_ops_{cle}"] = int(dans_periode["nb_ops"].sum())
+    return resultat
+
+
+def flux_jours_periode(df: pd.DataFrame, debut: date, fin: date) -> pd.DataFrame:
+    """
+    Flux jour par jour entre deux exports, bornes incluses. Les jours ouvrés sont tous
+    affichés ; un samedi, dimanche ou jour férié n'apparaît que s'il a eu de l'activité.
+    Les totaux sont donc égaux à ceux de indicateurs_flux_periode().
+    """
+    lots = lots_et_dates(df)
+    jours = pd.date_range(pd.Timestamp(debut), pd.Timestamp(fin), freq="D")
+    t = pd.DataFrame({"jour": jours})
+    for cle, col, _ in ETAPES_FLUX:
+        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"))
+        t[f"lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
+        t[f"ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
+    ouvre = [j.weekday() < 5 and j.date() not in jours_feries(j.year) for j in t["jour"]]
+    activite = t[[c for c in t.columns if c != "jour"]].sum(axis=1) > 0
+    return t[pd.Series(ouvre, index=t.index) | activite].reset_index(drop=True)
+
+
 def flux_par_jour(df: pd.DataFrame, date_export: date, nb_jours: int = 20) -> pd.DataFrame:
     """
     Flux des `nb_jours` derniers jours ouvrés avant la date de l'export, calculé
@@ -1010,7 +1045,7 @@ def flux_par_jour(df: pd.DataFrame, date_export: date, nb_jours: int = 20) -> pd
 
 
 def resume_archive(df: pd.DataFrame, res: dict, date_export: date,
-                   date_jour: date | None = None) -> dict:
+                   date_jour: date | None = None, date_precedente: date | None = None) -> dict:
     """
     Prépare tout ce qui est archivé pour un export :
       - synthese : une ligne (création des lots + 9 indicateurs de suivi)
@@ -1037,6 +1072,9 @@ def resume_archive(df: pd.DataFrame, res: dict, date_export: date,
     indicateurs, etapes, bureaux = indicateurs_suivi(df, date_jour or date.today())
     synthese.update(indicateurs)
     synthese.update(indicateurs_flux(df, date_export))
+    # Flux entre l'export archivé précédent et celui-ci (s'il y en a un)
+    if date_precedente:
+        synthese.update(indicateurs_flux_periode(df, date_precedente, date_export))
 
     detail = (ops.assign(beneficiaire=ops["organisme"].replace("", "(non renseigné)"))
               .groupby(["beneficiaire", "fiche"]).size().rename("nb_operations").reset_index())

@@ -78,6 +78,20 @@ def objet_par_defaut(date_iso: str) -> str:
             f"(export du {_d(date_iso)})")
 
 
+def phrase_flux(ligne: dict) -> str:
+    """Activité de la période entre deux exports (dates incluses), sinon de la veille ouvrée."""
+    if ligne.get("periode_debut") and not pd.isna(ligne.get("flux_periode_lots_creation")):
+        p, debut = "flux_periode_", (f"Entre le {_d(ligne['periode_debut'])} et le "
+                                     f"{_d(ligne['periode_fin'])} inclus")
+    else:
+        p, debut = "flux_", f"Au cours de la journée du {_d(ligne.get('date_reference_flux'))}"
+    return (f"{debut}, {_n(ligne.get(p + 'lots_creation'))} lots ont été créés "
+            f"({_n(ligne.get(p + 'ops_creation'))} opérations), {_n(ligne.get(p + 'lots_envoi'))} lots "
+            f"ont été envoyés aux bureaux de contrôle ({_n(ligne.get(p + 'ops_envoi'))} opérations) et "
+            f"{_n(ligne.get(p + 'lots_retour'))} lots ont été restitués ({_n(ligne.get(p + 'ops_retour'))} "
+            "opérations).")
+
+
 def corps_par_defaut(ligne: dict, avant: dict | None, signature: str) -> str:
     """Mail formel reprenant les chiffres clés de l'export ; le détail est dans le PDF joint."""
     avant = avant or {}
@@ -100,7 +114,7 @@ Les principaux éléments à retenir sont les suivants :
 • Opérations éligibles : {_n(ligne.get('ops_eligibles'))}, dont {_n(ligne.get('ops_integrables_delai_2_mois'))} intégrables dans un lot (délai de contrôle supérieur à deux mois) ;
 • Constitution des lots : {_n(ligne.get('nb_lots_a_creer'))} nouveaux lots proposés pour {_n(ligne.get('nb_operations_a_integrer'))} opérations, dont {_n(ligne.get('nb_operations_ajoutees_lots_existants'))} ajoutées à des lots existants.
 
-Au cours de la journée du {_d(ligne.get('date_reference_flux'))}, {_n(ligne.get('flux_lots_creation'))} lots ont été créés ({_n(ligne.get('flux_ops_creation'))} opérations), {_n(ligne.get('flux_lots_envoi'))} lots ont été envoyés aux bureaux de contrôle ({_n(ligne.get('flux_ops_envoi'))} opérations) et {_n(ligne.get('flux_lots_retour'))} lots ont été restitués ({_n(ligne.get('flux_ops_retour'))} opérations).
+{phrase_flux(ligne)}
 
 Le détail des indicateurs, leur évolution ainsi que les graphiques de répartition figurent dans le document PDF joint.
 

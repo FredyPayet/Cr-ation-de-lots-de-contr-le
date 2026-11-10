@@ -80,6 +80,14 @@ def _somme(ligne, *cols):
 # Graphiques
 # ============================================================================
 
+def periode_flux(ligne: dict) -> tuple[str, str]:
+    """Flux entre deux exports (dates incluses) si connu, sinon jour ouvré précédent."""
+    if ligne.get("periode_debut") and not pd.isna(ligne.get("flux_periode_lots_creation")):
+        return ("flux_periode_", f"du {_d(ligne['periode_debut'])} au {_d(ligne['periode_fin'])} "
+                                 "(dates des deux exports incluses)")
+    return "flux_", f"du {_d(ligne.get('date_reference_flux'))} (jour ouvré précédant l'export)"
+
+
 def schema_flux(ligne: dict):
     """Schéma : flèche « créés » → 3 cercles (stocks) reliés par « envoyés » et « restitués »."""
     fig, ax = plt.subplots(figsize=(10, 3.5))
@@ -108,7 +116,7 @@ def schema_flux(ligne: dict):
         ax.text(5.85, y - r - 0.85, f"dont {_n(ligne['lots_controle_plus_5_sem'])} lots > 5 semaines",
                 ha="center", va="center", fontsize=8.5, fontweight="bold", color=ROUGE)
 
-    jour = _d(ligne.get("date_reference_flux"))
+    prefixe, periode = periode_flux(ligne)
     fleches = [((0.15, y), (2.7 - r - 0.08, y), GRIS, BLEU, "Créés", "creation", 0.9),
                ((2.7 + r + 0.08, y), (5.85 - r - 0.08, y), BLEU, ORANGE, "Envoyés", "envoi", 4.27),
                ((5.85 + r + 0.08, y), (9.0 - r - 0.08, y), ORANGE, VERT, "Restitués", "retour", 7.42)]
@@ -117,11 +125,11 @@ def schema_flux(ligne: dict):
                                      color=c2, linestyle=(0, (4, 3))))
         ax.text(xt, y + 0.62, titre.upper(), ha="center", va="bottom", fontsize=8, color=TEXTE_DOUX,
                 fontweight="bold")
-        ax.text(xt, y + 0.28, f"{_n(ligne.get(f'flux_lots_{cle}'))} lots", ha="center", va="bottom",
+        ax.text(xt, y + 0.28, f"{_n(ligne.get(f'{prefixe}lots_{cle}'))} lots", ha="center", va="bottom",
                 fontsize=11, fontweight="bold", color=TEXTE)
-        ax.text(xt, y + 0.08, f"{_n(ligne.get(f'flux_ops_{cle}'))} opé.", ha="center", va="bottom",
+        ax.text(xt, y + 0.08, f"{_n(ligne.get(f'{prefixe}ops_{cle}'))} opé.", ha="center", va="bottom",
                 fontsize=8.5, color=TEXTE_DOUX)
-    ax.text(0.0, 3.45, f"Flèches : activité du {jour} (jour ouvré précédant l'export)",
+    ax.text(0.0, 3.45, f"Flèches : activité {periode}",
             ha="left", va="top", fontsize=8.5, color=TEXTE_DOUX, style="italic")
     return fig
 
@@ -285,7 +293,7 @@ def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = 
     h.append(Paragraph("Flux du contrôle", styles["h2"]))
     h.append(_image(schema_flux(ligne), largeur / cm))
     h.append(Paragraph("Cercles : stock de lots dans l'export. Flèches : lots créés, envoyés et restitués "
-                       "le jour ouvré précédant l'export. Opé. = nombre d'opérations de ces lots.",
+                       f"{periode_flux(ligne)[1]}. Opé. = nombre d'opérations de ces lots.",
                        styles["texte"]))
 
     h.append(Paragraph("Indicateurs clés", styles["h2"]))

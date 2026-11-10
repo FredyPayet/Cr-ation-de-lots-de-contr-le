@@ -165,6 +165,19 @@ renvoie au vendredi, et les jours fériés français sont sautés, lundi de Pent
 Le flux dépend seulement de la date de l'export : il est identique quel que soit le jour où
 vous archivez.
 
+### Flux entre deux exports
+Dès qu'un export plus ancien est archivé, l'application calcule aussi le flux sur **toute la
+période entre les deux exports, dates incluses**. Elle compte les lots dont la date de création
+(W), d'envoi (Z) ou de retour (AA) est **≥ date de l'export précédent** et **≤ date de l'export
+présenté**. Exemple : exports du 03/11 et du 10/11 → période du 03/11 au 10/11 inclus.
+- Les flèches du schéma, le graphique jour par jour, le mail et le PDF utilisent alors ce
+  flux. Sans export précédent, ils montrent le flux du jour ouvré précédent.
+- Comme les deux bornes sont incluses, un lot daté du jour d'un export est compté dans les deux
+  périodes qui encadrent cet export.
+- Le calcul se fait sur l'export présenté : un lot supprimé entre les deux exports n'est pas compté.
+- Pour un export archivé avant cette version, rechargez-le puis cliquez sur
+  « ➕ Compléter l'archive ».
+
 Dans l'onglet Historique, le **schéma « Flux du contrôle »** relie trois stocks de lots, avec
 les opérations correspondantes. Les flèches portent les flux du jour de référence :
 lots créés → **Lots en création** (« En cours de constitution » + « En demande de

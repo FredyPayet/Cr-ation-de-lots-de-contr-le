@@ -28,9 +28,17 @@ import streamlit as st
 
 import exports
 import messagerie
-import rapport_pdf
 import regles
 import stockage
+
+# Le rapport PDF a besoin de matplotlib et reportlab (requirements.txt). S'ils manquent,
+# seul l'onglet « Rapport hebdomadaire » est indisponible : le reste de l'outil fonctionne.
+try:
+    import rapport_pdf
+    ERREUR_PDF = None
+except ImportError as _e:
+    rapport_pdf = None
+    ERREUR_PDF = str(_e)
 
 # ============================================================================
 # 1. CONFIGURATION DE LA PAGE
@@ -60,6 +68,19 @@ def fr(n) -> str:
 
 def date_fr(d) -> str:
     return pd.Timestamp(d).strftime("%d/%m/%Y") if pd.notna(d) else "-"
+
+
+def periode_flux(ligne: dict) -> tuple[str, str]:
+    """
+    Quel flux afficher ? Entre deux exports (si un export précédent était archivé) :
+    lots dont la date est >= date de l'export précédent ET <= date de l'export.
+    Sinon : jour ouvré précédant l'export. Renvoie (préfixe des colonnes, libellé).
+    """
+    if ligne.get("periode_debut") and not pd.isna(ligne.get("flux_periode_lots_creation")):
+        return ("flux_periode_", f"du {date_fr(ligne['periode_debut'])} au {date_fr(ligne['periode_fin'])} "
+                                 "(dates des deux exports incluses)")
+    jour = ligne.get("date_reference_flux")
+    return "flux_", (f"du {date_fr(jour)} (jour ouvré précédent)" if jour else "—")
 
 
 # ============================================================================
@@ -544,10 +565,10 @@ def confirmer_archive(archive: dict):
 - **{fr(s['lots_restitues'])}** lots restitués
 - **{fr(s['ops_eligibles'])}** opérations éligibles, dont **{fr(s['ops_integrables_delai_2_mois'])}** intégrables (délai > 2 mois)
 
-**Flux du {date_fr(s['date_reference_flux'])}** (jour ouvré précédent)
-- 🆕 {fr(s['flux_lots_creation'])} lots créés ({fr(s['flux_ops_creation'])} opé.)
-- 📤 {fr(s['flux_lots_envoi'])} lots envoyés ({fr(s['flux_ops_envoi'])} opé.)
-- 📥 {fr(s['flux_lots_retour'])} lots restitués ({fr(s['flux_ops_retour'])} opé.)
+**Flux {periode_flux(s)[1]}**
+- 🆕 {fr(s[periode_flux(s)[0] + 'lots_creation'])} lots créés ({fr(s[periode_flux(s)[0] + 'ops_creation'])} opé.)
+- 📤 {fr(s[periode_flux(s)[0] + 'lots_envoi'])} lots envoyés ({fr(s[periode_flux(s)[0] + 'ops_envoi'])} opé.)
+- 📥 {fr(s[periode_flux(s)[0] + 'lots_retour'])} lots restitués ({fr(s[periode_flux(s)[0] + 'ops_retour'])} opé.)
 """)
     st.caption("Une seule archive est possible par date d'export : vérifiez vos réglages avant de confirmer.")
     c1, c2 = st.columns(2)
@@ -584,7 +605,8 @@ with zone_haut:
                                   "ou du flux d'activité. "
                                   "Ce bouton les ajoute (ainsi que les graphiques) sans modifier "
                                   "les chiffres de création des lots déjà archivés."):
-                archive_jour = regles.resume_archive(df, res, date_export, date.today())
+                archive_jour = regles.resume_archive(df, res, date_export, date.today(),
+                                                     stockage.date_precedente(date_iso))
                 try:
                     with st.spinner("Ajout des indicateurs de suivi…"):
                         ok, avertissement = stockage.completer_archive(archive_jour)
@@ -599,7 +621,8 @@ with zone_haut:
                           width="stretch",
                           help="Une seule archive est possible par date d'export.")
         else:
-            archive_jour = regles.resume_archive(df, res, date_export, date.today())
+            archive_jour = regles.resume_archive(df, res, date_export, date.today(),
+                                                     stockage.date_precedente(date_iso))
             if bouton.button(f"🗄️ Archiver les résultats du {date_fr(date_export)}",
                              width="stretch",
                              help="Enregistre la création des lots, les indicateurs de suivi du "
@@ -744,7 +767,7 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
       Lots créés → [Lots en création] → Lots envoyés → [En cours de contrôle]
                  → Lots restitués → [Lots à traiter]
     """
-    jour = date_fr(jour_ref) if jour_ref else "—"
+    prefixe, periode = periode_flux(ligne)
 
     def nb(col):
         return valeur(ligne, col)
@@ -755,8 +778,8 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
         return (
             f'<div class="fx-flux">'
             f'<div class="fx-badge"><div class="fx-badge-titre">{icone} {titre}</div>'
-            f'<div class="fx-badge-chiffre">{nb(f"flux_lots_{cle}")} lots</div>'
-            f'<div class="fx-badge-ops">{nb(f"flux_ops_{cle}")} opé.</div></div>'
+            f'<div class="fx-badge-chiffre">{nb(f"{prefixe}lots_{cle}")} lots</div>'
+            f'<div class="fx-badge-ops">{nb(f"{prefixe}ops_{cle}")} opé.</div></div>'
             # flèche horizontale
             f'<svg class="fx-h" width="100%" height="28" viewBox="0 0 130 28" preserveAspectRatio="none" aria-hidden="true">'
             f'<defs><linearGradient id="fxg{n}" gradientUnits="userSpaceOnUse" x1="4" y1="14" x2="112" y2="14">'
@@ -791,7 +814,7 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
     return CSS_FLUX.replace("\n", "") + (
         f'<div class="fx-zone"><div class="fx-carte" role="group" aria-label="Schéma du flux du contrôle">'
         f'<div class="fx-entete"><span class="fx-entete-titre">Stock de lots et activité</span>'
-        f'<span class="fx-entete-jour">Flèches : activité du <b>{jour}</b> (jour ouvré précédent)</span></div>'
+        f'<span class="fx-entete-jour">Flèches : activité <b>{periode}</b></span></div>'
         f'<div class="fx-schema">'
         + fleche(1, "Créés", "🆕", "creation", None, "creation")
         + cercle("creation", "🧩", "Lots en création", lots_creation, nb("ops_en_creation"),
@@ -917,15 +940,26 @@ with onglet_historique:
             st.info(f"ℹ️ Le flux n'est pas complet pour l'export du {date_fr(choix_date)}. Rechargez cet "
                     "export puis cliquez sur « ➕ Compléter l'archive » en haut de page.")
         st.markdown(schema_flux(ligne, jour_ref), unsafe_allow_html=True)
+        prefixe_choisi, libelle_periode = periode_flux(ligne)
         st.caption(f"Cercles : stock de lots dans l'export du {date_fr(choix_date)}. Flèches : lots "
-                   "créés, envoyés et restitués le jour ouvré précédent. Opé. = nombre de lignes "
-                   "(opérations) de ces lots.")
+                   f"créés, envoyés et restitués {libelle_periode}. Opé. = nombre de lignes "
+                   "(opérations) de ces lots."
+                   + ("" if prefixe_choisi == "flux_periode_" else
+                      " Dès qu'un export précédent est archivé, les flèches couvrent toute la période "
+                      "entre les deux exports."))
 
         # Graphique : les 20 derniers jours ouvrés (depuis l'export chargé, sinon depuis l'archive)
         unite = st.radio("Afficher le flux en", ["Lots", "Opérations"], horizontal=True,
                          key="unite_flux")
         prefixe = "lots" if unite == "Lots" else "ops"
-        if df is not None and date_export is not None:
+        export_choisi_charge = (df is not None and date_export is not None
+                                and date_export.isoformat() == choix_date)
+        if export_choisi_charge and prefixe_choisi == "flux_periode_":
+            # Même période que les flèches du schéma : de l'export précédent à celui-ci, inclus
+            flux_t = regles.flux_jours_periode(df, ligne["periode_debut"], ligne["periode_fin"])
+            source_flux = (f"Jour par jour du {date_fr(ligne['periode_debut'])} au "
+                           f"{date_fr(ligne['periode_fin'])} (dates des deux exports incluses).")
+        elif df is not None and date_export is not None:
             flux_t = regles.flux_par_jour(df, date_export, 20)
             source_flux = (f"Calculé à partir de l'export chargé (du {date_fr(date_export)}) : "
                            "20 derniers jours ouvrés.")
@@ -1076,7 +1110,12 @@ with onglet_mail:
         st.error(f"L'archive n'a pas pu être lue : {e}")
     synthese_m = archive_m["synthese"].sort_values("date_export") if archive_m else pd.DataFrame()
 
-    if synthese_m.empty:
+    if rapport_pdf is None:
+        st.error("⚠️ Le rapport PDF est indisponible : une bibliothèque n'est pas installée "
+                 f"({ERREUR_PDF}). Vérifiez que le fichier « requirements.txt » de GitHub contient bien "
+                 "les lignes « matplotlib>=3.8 » et « reportlab>=4.0 », puis redémarrez l'application "
+                 "(Manage app → ⋮ → Reboot app).")
+    elif synthese_m.empty:
         st.info("Le rapport se construit à partir d'un export archivé. Chargez l'export de la semaine, "
                 "puis cliquez sur « Archiver les résultats » en haut de page.")
     else:
@@ -1141,7 +1180,10 @@ with onglet_mail:
         st.markdown("##### 4. Pièce jointe et brouillon")
         flux_m = None
         if df is not None and date_export is not None and date_export.isoformat() == date_mail:
-            flux_m = regles.flux_par_jour(df, date_export, 20)
+            if ligne_m.get("periode_debut") and not pd.isna(ligne_m.get("flux_periode_lots_creation")):
+                flux_m = regles.flux_jours_periode(df, ligne_m["periode_debut"], ligne_m["periode_fin"])
+            else:
+                flux_m = regles.flux_par_jour(df, date_export, 20)
         semaine_m = pd.Timestamp(date_mail).isocalendar().week
         nom_pdf = f"Suivi_controle_lots_S{semaine_m}_{date_mail}.pdf"
         try:

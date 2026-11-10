@@ -67,6 +67,14 @@ TABLES = {
         ("flux_ops_envoi", "Flux : opé. des lots envoyés"),
         ("flux_lots_retour", "Flux : lots restitués"),
         ("flux_ops_retour", "Flux : opé. des lots restitués"),
+        ("periode_debut", "Flux période : du (export précédent)"),
+        ("periode_fin", "Flux période : au (export)"),
+        ("flux_periode_lots_creation", "Flux période : lots créés"),
+        ("flux_periode_ops_creation", "Flux période : opé. des lots créés"),
+        ("flux_periode_lots_envoi", "Flux période : lots envoyés"),
+        ("flux_periode_ops_envoi", "Flux période : opé. des lots envoyés"),
+        ("flux_periode_lots_retour", "Flux période : lots restitués"),
+        ("flux_periode_ops_retour", "Flux période : opé. des lots restitués"),
     ]),
     "detail": ("Détail bénéficiaires", [
         ("date_export", "Date de l'export"),
@@ -87,7 +95,7 @@ TABLES = {
     ]),
 }
 COLONNES_TEXTE = {"date_export", "date_archivage", "beneficiaire", "fiche", "etape", "bureau",
-                  "date_reference_flux"}
+                  "date_reference_flux", "periode_debut", "periode_fin"}
 ONGLET_GRAPHIQUES = "Graphiques"
 ONGLET_PARAMETRES = "Paramètres"
 
@@ -370,15 +378,23 @@ class StockageGoogle:
         flux = synthese[synthese["flux_lots_creation"].notna()].sort_values("date_export").tail(30)
         if not flux.empty:
             debut = 3 + max(len(lignes_e), len(lignes_b)) + 3   # ligne (index à 0) du tableau
-            entete_flux = ["Jour de référence", "Lots créés", "Opé. des lots créés", "Lots envoyés",
+            entete_flux = ["Période", "Lots créés", "Opé. des lots créés", "Lots envoyés",
                            "Opé. des lots envoyés", "Lots restitués", "Opé. des lots restitués"]
-            lignes_f = [[pd.Timestamp(r["date_reference_flux"]).strftime("%d/%m/%Y")
-                         if r["date_reference_flux"] else pd.Timestamp(r["date_export"]).strftime("%d/%m/%Y")]
-                        + [_cellule(r[c]) for c in ("flux_lots_creation", "flux_ops_creation",
-                                                    "flux_lots_envoi", "flux_ops_envoi",
-                                                    "flux_lots_retour", "flux_ops_retour")]
-                        for r in flux.to_dict("records")]
-            ws.update(values=[["Flux d'activité (jour ouvré précédant chaque export archivé)"]],
+            cles_flux = ("lots_creation", "ops_creation", "lots_envoi", "ops_envoi",
+                         "lots_retour", "ops_retour")
+
+            def ligne_flux(r):
+                # Entre deux exports (bornes incluses) si connu, sinon jour ouvré précédent
+                if r.get("periode_debut") and not pd.isna(r.get("flux_periode_lots_creation")):
+                    libelle = (f"{pd.Timestamp(r['periode_debut']):%d/%m} → "
+                               f"{pd.Timestamp(r['periode_fin']):%d/%m/%Y}")
+                    return [libelle] + [_cellule(r[f"flux_periode_{c}"]) for c in cles_flux]
+                jour_f = r["date_reference_flux"] or r["date_export"]
+                return [f"le {pd.Timestamp(jour_f):%d/%m/%Y}"] + [_cellule(r[f"flux_{c}"]) for c in cles_flux]
+
+            lignes_f = [ligne_flux(r) for r in flux.to_dict("records")]
+            ws.update(values=[["Flux d'activité entre deux exports archivés (dates incluses) — "
+                               "à défaut, jour ouvré précédant l'export"]],
                       range_name=f"A{debut}")
             ws.update(values=[entete_flux] + lignes_f, range_name=f"A{debut + 1}")
             ws.format(f"A{debut}", {"textFormat": {"bold": True, "fontSize": 12}})
@@ -386,11 +402,11 @@ class StockageGoogle:
             l0, l1 = debut, debut + 1 + len(lignes_f)   # en-tête (index à 0) -> dernière ligne
             couleurs = [(0.12, 0.37, 0.68), (0.88, 0.54, 0.0), (0.18, 0.49, 0.20)]
             requetes.append({"addChart": {"chart": {
-                "spec": {"title": "Flux d'activité : lots créés, envoyés et restitués par jour",
+                "spec": {"title": "Flux d'activité : lots créés, envoyés et restitués entre deux exports",
                          "basicChart": {
                              "chartType": "COLUMN", "legendPosition": "BOTTOM_LEGEND",
                              "headerCount": 1,
-                             "axis": [{"position": "BOTTOM_AXIS", "title": "Jour ouvré de référence"},
+                             "axis": [{"position": "BOTTOM_AXIS", "title": "Période entre deux exports"},
                                       {"position": "LEFT_AXIS", "title": "Nombre de lots"}],
                              "domains": [{"domain": plage(l0, l1, 0, 1)}],
                              "series": [
@@ -511,7 +527,16 @@ INDICATEURS_SUIVI = ["lots_en_constitution", "lots_demande_coordonnees", "lots_e
                      "ops_en_controle", "lots_controle_plus_5_sem", "ops_controle_plus_5_sem",
                      "lots_restitues", "ops_eligibles", "ops_integrables_delai_2_mois",
                      "ops_en_creation", "ops_restitues", *INDICATEURS_FLUX]
-INDICATEURS_A_COMPLETER = INDICATEURS_SUIVI + ["date_reference_flux"]
+INDICATEURS_PERIODE = ["periode_debut", "periode_fin", "flux_periode_lots_creation",
+                       "flux_periode_ops_creation", "flux_periode_lots_envoi", "flux_periode_ops_envoi",
+                       "flux_periode_lots_retour", "flux_periode_ops_retour"]
+INDICATEURS_A_COMPLETER = INDICATEURS_SUIVI + ["date_reference_flux"] + INDICATEURS_PERIODE
+
+
+def date_precedente(date_iso: str) -> str | None:
+    """Date du dernier export archivé AVANT `date_iso` (pour le flux entre deux exports)."""
+    dates = sorted(d for d in charger_archive()["synthese"]["date_export"] if d < date_iso)
+    return dates[-1] if dates else None
 
 
 def archive_incomplete(date_iso: str) -> bool:
@@ -521,6 +546,9 @@ def archive_incomplete(date_iso: str) -> bool:
     if ligne.empty:
         return False
     manque_indicateurs = ligne[INDICATEURS_SUIVI].isna().any(axis=None)
+    # Flux entre deux exports : seulement s'il existe un export archivé avant celui-ci
+    if (archive["synthese"]["date_export"] < date_iso).any():
+        manque_indicateurs = manque_indicateurs or bool(ligne["flux_periode_lots_creation"].isna().any())
     manque_graphiques = (archive["etapes"]["date_export"] == date_iso).sum() == 0 \
         and (archive["bureaux"]["date_export"] == date_iso).sum() == 0
     return bool(manque_indicateurs or manque_graphiques)
@@ -536,7 +564,8 @@ def completer_archive(archive_jour: dict) -> tuple[bool, str | None]:
     archive = charger_archive(forcer=True)
     if date_iso not in set(archive["synthese"]["date_export"]):
         return False, None
-    valeurs = {k: archive_jour["synthese"][k] for k in INDICATEURS_A_COMPLETER}
+    valeurs = {k: archive_jour["synthese"][k] for k in INDICATEURS_A_COMPLETER
+               if k in archive_jour["synthese"]}
     _stockage.completer_ligne("synthese", date_iso, valeurs)
     for t in ("etapes", "bureaux"):
         if (archive[t]["date_export"] == date_iso).sum() == 0:
