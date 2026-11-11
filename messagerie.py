@@ -111,7 +111,8 @@ def _puce_audit(ligne: dict) -> str:
             f"{_n(ligne.get('audit_ops_eligibles'))} opérations éligibles ;\n")
 
 
-def corps_par_defaut(ligne: dict, avant: dict | None, signature: str) -> str:
+def corps_par_defaut(ligne: dict, avant: dict | None, signature: str,
+                     phrase_planning: str = "") -> str:
     """Mail formel reprenant les chiffres clés de l'export ; le détail est dans le PDF joint."""
     avant = avant or {}
     creation = None
@@ -134,7 +135,7 @@ Les principaux éléments à retenir sont les suivants (volumes exprimés en MWh
 {_puce_audit(ligne)}• Constitution des lots : {_n(ligne.get('nb_lots_a_creer'))} nouveaux lots proposés pour {_n(ligne.get('nb_operations_a_integrer'))} opérations, dont {_n(ligne.get('nb_operations_ajoutees_lots_existants'))} ajoutées à des lots existants.
 
 {phrase_flux(ligne)}
-
+{(chr(10) + phrase_planning + chr(10)) if phrase_planning else ""}
 Le détail des indicateurs, leur évolution ainsi que les graphiques de répartition figurent dans le document PDF joint.
 
 Je reste à votre disposition pour tout complément d'information.
@@ -173,7 +174,8 @@ def texte_vers_html(texte: str) -> str:
 # ============================================================================
 
 def construire_message(a: list[str], cc: list[str], objet: str, corps: str,
-                       pdf: bytes | None, nom_pdf: str) -> EmailMessage:
+                       pdf: bytes | None, nom_pdf: str,
+                       autres_pieces: list[tuple[bytes, str]] | None = None) -> EmailMessage:
     """
     Mail « non envoyé » : l'en-tête « X-Unsent: 1 » demande à Outlook de l'ouvrir comme un
     nouveau message à relire (et non comme un message reçu). Pas d'expéditeur ni de date :
@@ -189,13 +191,16 @@ def construire_message(a: list[str], cc: list[str], objet: str, corps: str,
     msg.add_alternative(texte_vers_html(corps), subtype="html")
     if pdf:
         msg.add_attachment(pdf, maintype="application", subtype="pdf", filename=nom_pdf)
+    for contenu, nom in autres_pieces or []:   # autres PDF joints (planning de la semaine)
+        msg.add_attachment(contenu, maintype="application", subtype="pdf", filename=nom)
     return msg
 
 
 def fichier_outlook(a: list[str], cc: list[str], objet: str, corps: str,
-                    pdf: bytes | None, nom_pdf: str) -> bytes:
+                    pdf: bytes | None, nom_pdf: str,
+                    autres_pieces: list[tuple[bytes, str]] | None = None) -> bytes:
     """Contenu du fichier .eml à télécharger puis à ouvrir (double-clic) dans Outlook."""
-    return construire_message(a, cc, objet, corps, pdf, nom_pdf).as_bytes(policy=SMTP)
+    return construire_message(a, cc, objet, corps, pdf, nom_pdf, autres_pieces).as_bytes(policy=SMTP)
 
 
 LONGUEUR_MAX_LIEN = 1900   # au-delà, certains postes Windows coupent le lien

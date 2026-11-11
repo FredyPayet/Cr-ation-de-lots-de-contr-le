@@ -46,6 +46,7 @@ COLONNES = [
     ("Z", "Date d'envoi du lot de contrôle", "date_envoi"),
     ("AA", "Date de retour du lot de contrôle", "date_retour"),
     ("AB", "Raison sociale de l'organisme de contrôle", "bureau"),
+    ("AC", "Statut du contrôle", "statut_controle"),
     ("AH", "Statut AH", "statut_ah"),
     ("BQ", "Opération abandonnée ?", "abandon"),
 ]
@@ -252,7 +253,7 @@ def lire_export(fichier) -> pd.DataFrame:
 
     # Nettoyage des textes
     for col in ["dossier", "dcts", "organisme", "fiche", "autres_fiches", "lot",
-                "etape", "bureau", "statut_ah", "abandon"]:
+                "etape", "bureau", "statut_controle", "statut_ah", "abandon"]:
         df[col] = df[col].where(df[col].notna(), "").astype(str).str.strip()
         df.loc[df[col].isin(["nan", "None"]), col] = ""
     df["fiche"] = df["fiche"].str.upper()

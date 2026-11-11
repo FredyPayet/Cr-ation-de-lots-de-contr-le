@@ -12,7 +12,7 @@ Organisation de ce fichier :
     3. Barre latérale : fichier et réglages
     4. Onglet « Création des lots » (indicateurs, bureaux, parties 1, 2, 3)
     5. Bouton d'archivage (en haut de page)
-    6. Onglet « Opérations écartées »
+    6. Onglet « Opérations écartées », puis onglet « Planning » (charge de la semaine)
     7. Onglet « Historique »
 """
 from __future__ import annotations
@@ -30,6 +30,16 @@ import exports
 import messagerie
 import regles
 import stockage
+
+# Planning : si le fichier n'a pas été déposé sur GitHub, le reste de l'application fonctionne
+try:
+    import planning
+except ImportError:
+    planning = None
+try:
+    import planning_pdf
+except ImportError:      # fichier absent, ou matplotlib / reportlab non installés
+    planning_pdf = None
 
 # Le rapport PDF a besoin de matplotlib et reportlab (requirements.txt). S'ils manquent,
 # seul l'onglet « Rapport hebdomadaire » est indisponible : le reste de l'outil fonctionne.
@@ -98,7 +108,14 @@ VERSION_CODE = hashlib.md5(b"".join(
     open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
 
 # Vérification que tous les fichiers ont bien été mis à jour ensemble
-if not (hasattr(regles, "lignes_audit") and hasattr(stockage, "sans_categories")
+_regles_planning = any(c[2] == "statut_controle" for c in regles.COLONNES)   # version 9
+_versions_9 = [   # version 9 bis : PDF et archive du planning
+    ("stockage.py", hasattr(stockage, "archiver_planning")),
+    ("planning.py", planning is None or hasattr(planning, "resume")),
+    ("messagerie.py", "phrase_planning" in getattr(getattr(messagerie, "corps_par_defaut", None),
+                                                    "__code__", type("", (), {"co_varnames": ()})).co_varnames)]
+if not (all(ok for _, ok in _versions_9) and (planning is None or _regles_planning)
+        and hasattr(regles, "lignes_audit") and hasattr(stockage, "sans_categories")
         and hasattr(messagerie, "fichier_outlook") and hasattr(exports, "excel_tableau")
         and (rapport_pdf is None or hasattr(rapport_pdf, "AUDIT"))):
     _anciens = [nom for nom, ok in [
@@ -107,10 +124,14 @@ if not (hasattr(regles, "lignes_audit") and hasattr(stockage, "sans_categories")
         ("messagerie.py", hasattr(messagerie, "fichier_outlook")),
         ("exports.py", hasattr(exports, "excel_tableau")),
         ("rapport_pdf.py", rapport_pdf is None or hasattr(rapport_pdf, "AUDIT"))] if not ok]
+    if planning is not None and not _regles_planning:
+        _anciens.append("regles.py")
+    _anciens = list(dict.fromkeys(_anciens + [nom for nom, ok in _versions_9 if not ok]))
     st.error("⚠️ Mise à jour incomplète. Fichier(s) encore à l'ancienne version sur GitHub : "
              + ", ".join(_anciens) + ". "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
-             "stockage.py, messagerie.py, rapport_pdf.py) par ceux de la dernière version, "
+             "stockage.py, messagerie.py, rapport_pdf.py, planning.py, planning_pdf.py) par ceux de la "
+             "dernière version, "
              "puis redémarrez l'application.")
     st.stop()
 
@@ -144,6 +165,36 @@ def charger_clients(url: str) -> dict:
 @st.cache_resource(show_spinner="Connexion au Google Sheet d'archive…")
 def connexion_google(identifiants_json: str, url: str):
     return stockage.StockageGoogle(json.loads(identifiants_json), url)
+
+
+CHAMPS_PLANNING = ["semaines_coordonnees", "semaines_envoi", "semaines_traitement", "mois_priorite"]
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def calculer_planning(_df: pd.DataFrame, cle_fichier: str, date_export: date, date_jour: date,
+                      reglages: tuple, version: str = VERSION_CODE) -> dict:
+    return planning.charge(_df, date_export, date_jour, planning.Reglages(*reglages))
+
+
+def reglages_planning() -> tuple:
+    """Délais du planning : ceux affichés dans l'onglet, sinon ceux enregistrés, sinon ceux par défaut."""
+    defaut, sauves_p = planning.Reglages(), stockage.charger_parametres().get("planning", {})
+    return tuple(int(st.session_state.get(f"planning_{c}", sauves_p.get(c, getattr(defaut, c))))
+                 for c in CHAMPS_PLANNING)
+
+
+def planning_du_jour(df: pd.DataFrame, cle_fichier: str, date_export: date, res: dict) -> tuple[dict, dict]:
+    """(listes du planning, chiffres résumés) pour l'export chargé."""
+    r = reglages_planning()
+    charge = calculer_planning(df, cle_fichier, date_export, date.today(), r)
+    return charge, planning.resume(charge, len(res["lots"]), int(res["lots"]["nb_ops"].sum()),
+                                   date_export, planning.Reglages(*r))
+
+
+@st.cache_data(show_spinner="Préparation du PDF du planning…", max_entries=4)
+def preparer_pdf_planning(_charge: dict, cle: str, _resume: dict, auteur: str,
+                          version: str = VERSION_CODE) -> bytes:
+    return planning_pdf.generer_pdf(_charge, _resume, auteur)
 
 
 def secrets_google() -> tuple[dict, str] | None:
@@ -293,8 +344,9 @@ with st.sidebar:
 # ============================================================================
 
 zone_haut = st.container()
-onglet_creation, onglet_ecartes, onglet_historique, onglet_mail = st.tabs(
-    ["📦 Création des lots", "🚫 Opérations écartées", "📈 Historique", "📧 Rapport hebdomadaire"])
+onglet_creation, onglet_planning, onglet_ecartes, onglet_historique, onglet_mail = st.tabs(
+    ["📦 Création des lots", "🗓️ Planning", "🚫 Opérations écartées", "📈 Historique",
+     "📧 Rapport hebdomadaire"])
 
 res = None
 
@@ -548,7 +600,7 @@ with onglet_creation:
 # ============================================================================
 
 @st.dialog("Archiver les résultats du jour", width="large")
-def confirmer_archive(archive: dict):
+def confirmer_archive(archive: dict, planning_archive: dict | None = None):
     s = archive["synthese"]
     ou = ("dans le **Google Sheet d'archive**" if stockage.mode_stockage() == "google"
           else "**temporairement** (Google Sheet non configuré)")
@@ -596,8 +648,15 @@ def confirmer_archive(archive: dict):
                      "continue, téléchargez l'archive depuis l'onglet Historique.")
             return
         if ok:
+            suite_planning = ""
+            if planning is not None and planning_archive is not None:   # chiffres du planning, même date
+                try:
+                    stockage.archiver_planning(planning_archive)
+                    suite_planning = " (avec les chiffres du planning)"
+                except Exception as e:
+                    suite_planning = f" — ⚠️ chiffres du planning non archivés ({e})"
             st.session_state["message_archive"] = (
-                f"Résultats du {date_fr(s['date_export'])} archivés ✅"
+                f"Résultats du {date_fr(s['date_export'])} archivés ✅{suite_planning}"
                 + (f" — {avertissement}" if avertissement else ""))
         else:
             st.session_state["message_archive"] = "Cet export avait déjà été archivé : rien n'a été modifié."
@@ -647,8 +706,14 @@ with zone_haut:
             if bouton.button(f"🗄️ Archiver les résultats du {date_fr(date_export)}",
                              width="stretch",
                              help="Enregistre la création des lots, les indicateurs de suivi du "
-                                  "contrôle et le détail par bénéficiaire."):
-                confirmer_archive(archive_jour)
+                                  "contrôle, le détail par bénéficiaire et les chiffres du planning."):
+                planning_jour = None
+                if planning is not None:
+                    try:
+                        planning_jour = planning_du_jour(df, cle_fichier, date_export, res)[1]
+                    except Exception:
+                        planning_jour = None   # le planning ne doit jamais empêcher d'archiver
+                confirmer_archive(archive_jour, planning_jour)
     if "message_archive" in st.session_state:
         st.success(st.session_state.pop("message_archive"))
 
@@ -690,6 +755,250 @@ with onglet_ecartes:
             file_name=f"Operations_ecartees_{date_export:%Y-%m-%d}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary", width="stretch")
+
+
+# ============================================================================
+# 6 bis. ONGLET « PLANNING » (charge de travail de la semaine)
+# ============================================================================
+
+with onglet_planning:
+    if planning is None:
+        st.error("⚠️ Le fichier « planning.py » est absent. Déposez-le sur GitHub avec les autres "
+                 "fichiers de l'application, puis redémarrez-la.")
+    elif res is None:
+        st.info("Chargez un export (panneau de gauche) pour voir la charge de travail de la semaine.")
+    else:
+        ICONES = {planning.PRIORITAIRE: "🔴 Prioritaire (échéance proche)", planning.DEPASSE: "🟠 Délai dépassé",
+                  planning.A_PLANIFIER: "🟡 À planifier cette semaine", planning.DANS_DELAIS: "🟢 Dans les délais"}
+        COULEURS_PRIORITE = {planning.PRIORITAIRE: "#B91C1C", planning.DEPASSE: "#C2410C",
+                             planning.A_PLANIFIER: "#E08A00", planning.DANS_DELAIS: "#8A9BB0"}
+
+        st.markdown(f"Charge de travail de l'équipe d'après l'export du **{date_fr(date_export)}**. "
+                    "Chaque lot est classé par priorité : les lots **au planning de la semaine** sont ceux "
+                    "dont l'échéance est proche, dont le délai est dépassé ou le sera dans la semaine.")
+
+        # ---------------- Réglages des délais ----------------
+        defaut = planning.Reglages()
+        sauves_planning = stockage.charger_parametres().get("planning", {})
+        with st.expander("⚙️ Modifier les délais"):
+            c = st.columns(4)
+            def reglage(col, champ, libelle, unite, aide):
+                return col.number_input(f"{libelle} ({unite})", min_value=1, max_value=52, step=1,
+                                        value=int(sauves_planning.get(champ, getattr(defaut, champ))),
+                                        key=f"planning_{champ}", help=aide)
+            sem_coord = reglage(c[0], "semaines_coordonnees", "Passage en demande de coordonnées", "semaines",
+                                "Délai maximum entre la date de création du lot et la date de l'export, "
+                                "pour un lot « En cours de constitution ».")
+            sem_envoi = reglage(c[1], "semaines_envoi", "Envoi du lot", "semaines",
+                                "Délai maximum entre la date de création du lot et la date de l'export, "
+                                "pour un lot « En demande de coordonnées ».")
+            sem_trait = reglage(c[2], "semaines_traitement", "Traitement du lot restitué", "semaines",
+                                "Délai maximum entre la date de retour du lot et la date de l'export, "
+                                "pour un lot « Lot restitué ».")
+            mois_prio = reglage(c[3], "mois_priorite", "Échéance proche", "mois",
+                                "Un lot est prioritaire si sa date réelle de réalisation la plus ancienne "
+                                "+ 12 mois tombe dans ce nombre de mois ou moins.")
+            choisis = {"semaines_coordonnees": sem_coord, "semaines_envoi": sem_envoi,
+                       "semaines_traitement": sem_trait, "mois_priorite": mois_prio}
+            if st.button("💾 Enregistrer ces délais", key="planning_enregistrer",
+                         help="Ces délais seront repris à la prochaine ouverture de l'application."):
+                try:
+                    stockage.enregistrer_parametres({"planning": choisis})
+                    st.toast("Délais enregistrés.", icon="✅")
+                except Exception as e:
+                    st.error(f"Les délais n'ont pas pu être enregistrés. (Détail : {e})")
+            st.caption("Un lot « approche » de son délai quand il lui reste 7 jours ou moins.")
+
+        r_plan = planning.Reglages(sem_coord, sem_envoi, sem_trait, mois_prio)
+        charge = calculer_planning(df, cle_fichier, date_export, date.today(),
+                                   (sem_coord, sem_envoi, sem_trait, mois_prio))
+        delais = {"coordonnees": sem_coord, "envoi": sem_envoi, "traitement": sem_trait}
+
+        # ---------------- Les 6 indicateurs ----------------
+        st.subheader("Charge de la semaine")
+        cartes = st.columns(3)
+        noms_courts = {"coordonnees": "Lots à passer en demande de coordonnées", "envoi": "Lots à envoyer",
+                       "traitement": "Lots à traiter"}
+        for i, (cle, *_reste) in enumerate(planning.ACTIVITES):
+            t = charge[cle]
+            au_planning = t[t["au_planning"]]
+            cartes[i].metric(noms_courts[cle], fr(len(au_planning)), border=True,
+                             help=f"Lots au planning de la semaine. Délai : {delais[cle]} semaines.")
+            cartes[i].caption(f"au planning, sur **{fr(len(t))}** lots · {fr(au_planning['nb_ops'].sum())} "
+                              f"opérations au planning, {fr(t['nb_ops'].sum())} en tout")
+        cartes = st.columns(3)
+        cartes[0].metric("Dossiers à relancer sans AH", fr(len(charge["ah"])), border=True,
+                         help="Dossiers avec au moins une opération au Statut AH « Attente AH ».")
+        cartes[0].caption(f"{fr(charge['ah']['nb_ops'].sum())} opérations en attente d'AH")
+        cartes[1].metric("Opérations non satisfaisantes à relancer", fr(len(charge["ko"])), border=True,
+                         help="Opérations au Statut du contrôle « Contrôlé KO sur site ».")
+        cartes[1].caption(f"dans {fr(charge['ko']['dossier'].nunique())} dossiers")
+        cartes[2].metric("Lots à créer", fr(len(res["lots"])), border=True,
+                         help="Nombre de nouveaux lots calculé dans l'onglet « Création des lots ».")
+        cartes[2].caption(f"{fr(res['lots']['nb_ops'].sum())} opérations à intégrer dans ces lots")
+
+        # ---------------- Graphique : lots par priorité ----------------
+        fig = go.Figure()
+        titres = [noms_courts[cle] for cle, *_ in planning.ACTIVITES][::-1]
+        for prio in planning.PRIORITES:
+            valeurs = [int((charge[cle]["priorite"] == prio).sum()) for cle, *_ in planning.ACTIVITES][::-1]
+            fig.add_bar(y=titres, x=valeurs, name=ICONES[prio][2:], orientation="h",
+                        marker_color=COULEURS_PRIORITE[prio],
+                        text=[v if v else "" for v in valeurs], textposition="inside",
+                        hovertemplate="%{y} — " + ICONES[prio][2:] + " : %{x} lot(s)<extra></extra>")
+        fig.update_layout(barmode="stack", height=260, margin=dict(l=0, r=0, t=10, b=0), font=dict(size=14),
+                          legend=dict(orientation="h", y=-0.25, traceorder="normal"), plot_bgcolor="white",
+                          xaxis=dict(title="Nombre de lots", gridcolor="#E5E9F0"))
+        st.plotly_chart(fig, width="stretch")
+
+        # ---------------- Export complet ----------------
+        resume = pd.DataFrame(
+            [[noms_courts[cle], int(charge[cle]["au_planning"].sum()), len(charge[cle]),
+              int(charge[cle]["nb_ops"].sum()), f"{delais[cle]} semaines"] for cle, *_ in planning.ACTIVITES]
+            + [["Dossiers à relancer sans AH", len(charge["ah"]), len(charge["ah"]),
+                int(charge["ah"]["nb_ops"].sum()), ""],
+               ["Opérations non satisfaisantes à relancer", len(charge["ko"]), len(charge["ko"]),
+                len(charge["ko"]), ""],
+               ["Lots à créer", len(res["lots"]), len(res["lots"]), int(res["lots"]["nb_ops"].sum()), ""]],
+            columns=["Activité", "Au planning de la semaine", "Total", "Opérations", "Délai"])
+        onglets_planning = {"Charge de la semaine": resume,
+                            "À passer en coordonnées": planning.tableau_lots(charge["coordonnees"], "coordonnees"),
+                            "À envoyer": planning.tableau_lots(charge["envoi"], "envoi"),
+                            "À traiter": planning.tableau_lots(charge["traitement"], "traitement"),
+                            "Dossiers sans AH": planning.tableau_ah(charge["ah"]),
+                            "Opérations KO": planning.tableau_ko(charge["ko"])}
+        st.download_button("⬇️ Télécharger le planning complet (Excel)", type="primary",
+                           data=exports.excel_tableau(onglets_planning),
+                           file_name=f"Planning_{date_export:%Y-%m-%d}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           help="Un onglet par activité : tous les lots, triés par priorité, avec le nombre "
+                                "d'opérations.")
+
+        # ---------------- PDF du planning et archive des chiffres ----------------
+        resume_jour = planning.resume(charge, len(res["lots"]), int(res["lots"]["nb_ops"].sum()),
+                                      date_export, r_plan)
+        g, d = st.columns(2)
+        if planning_pdf is None:
+            g.caption("PDF du planning indisponible : déposez « planning_pdf.py » sur GitHub et vérifiez "
+                      "« requirements.txt » (matplotlib, reportlab).")
+        else:
+            try:
+                pdf_planning = preparer_pdf_planning(
+                    charge, f"{cle_fichier}_{date_export}_{date.today()}_{sem_coord}_{sem_envoi}_{sem_trait}_"
+                            f"{mois_prio}_{len(res['lots'])}", resume_jour, "")
+                g.download_button("⬇️ Télécharger le planning en PDF", data=pdf_planning, width="stretch",
+                                  file_name=f"Planning_S{resume_jour['semaine_export']}_{date_export:%Y-%m-%d}.pdf",
+                                  mime="application/pdf",
+                                  help="Les 6 chiffres, le graphique et les lots au planning de la semaine. "
+                                       "Ce PDF est aussi joint au mail de l'onglet « Rapport hebdomadaire ».")
+            except Exception as e:
+                g.error(f"Le PDF du planning n'a pas pu être créé : {e}")
+        try:
+            archive_p = stockage.charger_archive()["planning"]
+        except Exception:
+            archive_p = pd.DataFrame(columns=["date_export"])
+        deja_p = archive_p[archive_p["date_export"] == date_export.isoformat()]
+        if d.button(("🔄 Remplacer les chiffres archivés du planning" if len(deja_p)
+                     else "🗄️ Archiver les chiffres du planning"), width="stretch", key="planning_archiver",
+                    help="Une ligne par date d'export, pour suivre la charge d'une semaine à l'autre. "
+                         "Les chiffres sont aussi archivés automatiquement avec le bouton « Archiver les "
+                         "résultats » en haut de page."):
+            try:
+                remplace = stockage.archiver_planning(resume_jour)
+                st.session_state["message_planning"] = (
+                    f"Chiffres du planning du {date_fr(date_export)} "
+                    + ("remplacés" if remplace else "archivés") + " ✅")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Les chiffres du planning n'ont pas pu être archivés : {e}. Réessayez dans un instant.")
+        if "message_planning" in st.session_state:
+            st.success(st.session_state.pop("message_planning"))
+        elif len(deja_p):
+            st.caption(f"🗄️ Chiffres du planning de cet export déjà archivés le {deja_p['date_archivage'].iloc[0]}. "
+                       "Si vous avez changé les délais, utilisez « Remplacer » pour les mettre à jour.")
+
+        # ---------------- Évolution de la charge (exports archivés) ----------------
+        if len(archive_p) >= 2:
+            st.subheader("Évolution de la charge")
+            hist = archive_p.sort_values("date_export")
+            x_p = pd.to_datetime(hist["date_export"]).dt.strftime("%d/%m/%Y")
+            fig = go.Figure()
+            for col, nom, coul, trait, marque in [
+                    ("coordonnees_planning", "À passer en coordonnées (au planning)", COULEURS["apres"], "solid", "circle"),
+                    ("envoi_planning", "À envoyer (au planning)", COULEURS["objectif"], "solid", "circle"),
+                    ("traitement_planning", "À traiter (au planning)", "#2E7D32", "solid", "circle"),
+                    ("ah_dossiers", "Dossiers à relancer sans AH", "#7C3AED", "dash", "square"),
+                    ("ko_ops", "Opé. non satisfaisantes", "#B91C1C", "dash", "diamond"),
+                    ("lots_a_creer", "Lots à créer", "#4A5568", "dot", "triangle-up")]:
+                fig.add_scatter(x=x_p, y=hist[col].astype(float), name=nom, mode="lines+markers",
+                                line=dict(color=coul, width=3, dash=trait), marker=dict(size=9, symbol=marque),
+                                hovertemplate="%{x} — " + nom + " : %{y}<extra></extra>")
+            fig.update_layout(height=340, margin=dict(l=0, r=0, t=10, b=0), font=dict(size=14),
+                              legend=dict(orientation="h", y=-0.2), plot_bgcolor="white",
+                              xaxis=dict(type="category"),
+                              yaxis=dict(gridcolor="#E5E9F0", rangemode="tozero"))
+            st.plotly_chart(fig, width="stretch")
+            st.caption("Une valeur par export dont les chiffres du planning ont été archivés.")
+
+        # ---------------- Détail des trois activités sur les lots ----------------
+        for cle, titre, etape, _col, libelle_date, _champ in planning.ACTIVITES:
+            t = charge[cle]
+            st.subheader(titre)
+            if t.empty:
+                st.success(f"Aucun lot à l'étape « {etape} » dans cet export. 🎉")
+                continue
+            compte = t["priorite"].value_counts()
+            st.markdown(
+                f"**{fr(len(t))}** lots à l'étape « {etape} » ({fr(t['nb_ops'].sum())} opérations). "
+                f"Délai : **{delais[cle]} semaines** après la {libelle_date.lower()}. "
+                + " · ".join(f"{ICONES[p]} : **{int(compte.get(p, 0))}**" for p in planning.PRIORITES))
+            vue = planning.tableau_lots(t, cle)
+            vue["Priorité"] = t["priorite"].map(ICONES).values
+            st.dataframe(vue.drop(columns=["Au planning de la semaine"]), hide_index=True, width="stretch",
+                         height=min(38 * (len(vue) + 1), 420),
+                         column_config={c: st.column_config.DateColumn(format="DD/MM/YYYY") for c in
+                                        (libelle_date, "Date réelle de réalisation la plus ancienne",
+                                         "Échéance (+ 12 mois)")})
+            st.download_button(f"⬇️ Exporter ces {fr(len(t))} lots (Excel)", key=f"planning_export_{cle}",
+                               data=exports.excel_tableau({titre[:31]: planning.tableau_lots(t, cle)}),
+                               file_name=f"{titre.replace(' ', '_')}_{date_export:%Y-%m-%d}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        # ---------------- Dossiers à relancer sans AH ----------------
+        st.subheader("Dossiers à relancer sans AH")
+        if charge["ah"].empty:
+            st.success("Aucun dossier au Statut AH « Attente AH ». 🎉")
+        else:
+            st.markdown(f"**{fr(len(charge['ah']))}** dossiers ont au moins une opération au Statut AH "
+                        f"« Attente AH » ({fr(charge['ah']['nb_ops'].sum())} opérations). "
+                        "Les échéances les plus proches sont en haut.")
+            vue = planning.tableau_ah(charge["ah"])
+            st.dataframe(vue, hide_index=True, width="stretch", height=min(38 * (len(vue) + 1), 420),
+                         column_config={c: st.column_config.DateColumn(format="DD/MM/YYYY") for c in
+                                        ("Date réelle de réalisation la plus ancienne du lot",
+                                         "Échéance (+ 12 mois)")})
+            st.download_button(f"⬇️ Exporter ces {fr(len(vue))} dossiers (Excel)", key="planning_export_ah",
+                               data=exports.excel_tableau({"Dossiers sans AH": vue}),
+                               file_name=f"Dossiers_a_relancer_sans_AH_{date_export:%Y-%m-%d}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        # ---------------- Opérations non satisfaisantes ----------------
+        st.subheader("Opérations non satisfaisantes à relancer")
+        if charge["ko"].empty:
+            st.success("Aucune opération au Statut du contrôle « Contrôlé KO sur site ». 🎉")
+        else:
+            st.markdown(f"**{fr(len(charge['ko']))}** opérations au Statut du contrôle « Contrôlé KO sur "
+                        f"site », dans {fr(charge['ko']['dossier'].nunique())} dossiers.")
+            vue = planning.tableau_ko(charge["ko"])
+            st.dataframe(vue, hide_index=True, width="stretch", height=min(38 * (len(vue) + 1), 420),
+                         column_config={c: st.column_config.DateColumn(format="DD/MM/YYYY") for c in
+                                        ("Date réelle de réalisation",
+                                         "Date réelle de réalisation la plus ancienne du lot",
+                                         "Échéance (+ 12 mois)")})
+            st.download_button(f"⬇️ Exporter ces {fr(len(vue))} opérations (Excel)", key="planning_export_ko",
+                               data=exports.excel_tableau({"Opérations KO": vue}),
+                               file_name=f"Operations_non_satisfaisantes_{date_export:%Y-%m-%d}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # ============================================================================
@@ -1392,18 +1701,31 @@ with onglet_mail:
         st.markdown("##### 3. Mail")
         # Le texte proposé change si la période ou le flux disponible change
         cle_objet = f"objet_{date_mail}"
-        cle_corps = f"corps_{date_mail}_{date_comp}_{flux_periode_ok}"
+        # Planning de la semaine : second PDF joint, si l'export présenté est celui chargé à gauche
+        planning_m = None
+        if planning is not None and planning_pdf is not None and export_present_charge and res is not None:
+            if st.checkbox("Joindre le planning de la semaine (second PDF) et l'annoncer dans le texte",
+                           value=True, key="mail_avec_planning"):
+                try:
+                    planning_m = planning_du_jour(df, cle_fichier, date_export, res)
+                except Exception as e:
+                    st.warning(f"Le planning n'a pas pu être calculé : il ne sera pas joint. (Détail : {e})")
+        elif planning is not None and planning_pdf is not None:
+            st.caption(f"ℹ️ Pour joindre aussi le planning de la semaine, chargez l'export du "
+                       f"{date_fr(date_mail)} dans le panneau de gauche.")
+        phrase_planning = planning.phrase_mail(planning_m[1]) if planning_m else ""
+        cle_corps = f"corps_{date_mail}_{date_comp}_{flux_periode_ok}_{bool(planning_m)}"
         if cle_objet not in st.session_state:
             st.session_state[cle_objet] = messagerie.objet_par_defaut(date_mail)
         if cle_corps not in st.session_state:
-            st.session_state[cle_corps] = messagerie.corps_par_defaut(ligne_m, avant_m, signature)
+            st.session_state[cle_corps] = messagerie.corps_par_defaut(ligne_m, avant_m, signature, phrase_planning)
         st.text_input("Objet", key=cle_objet)
         st.text_area("Texte du mail (modifiable)", key=cle_corps, height=460)
         if st.button("↺ Rétablir le texte proposé",
                      help="Remplace le texte par la version générée à partir des chiffres (vos modifications "
                           "seront perdues)."):
             st.session_state[cle_objet] = messagerie.objet_par_defaut(date_mail)
-            st.session_state[cle_corps] = messagerie.corps_par_defaut(ligne_m, avant_m, signature)
+            st.session_state[cle_corps] = messagerie.corps_par_defaut(ligne_m, avant_m, signature, phrase_planning)
             st.rerun()
 
         # ---------------- 4. Pièce jointe et envoi depuis Outlook ----------------
@@ -1425,6 +1747,17 @@ with onglet_mail:
         except Exception as e:
             pdf = None
             st.error(f"Le PDF n'a pas pu être créé : {e}")
+        # Second PDF : planning de la semaine
+        pieces_planning = []
+        if planning_m:
+            try:
+                r_m = reglages_planning()
+                nom_pdf_planning = f"Planning_S{semaine_m}_{date_mail}.pdf"
+                pieces_planning = [(preparer_pdf_planning(
+                    planning_m[0], f"{cle_fichier}_{date_export}_{date.today()}_{r_m}_{len(res['lots'])}_{signature}",
+                    planning_m[1], signature), nom_pdf_planning)]
+            except Exception as e:
+                st.error(f"Le PDF du planning n'a pas pu être créé : {e}")
         if flux_m is None:
             st.caption("ℹ️ Pour un graphique de flux sur 20 jours ouvrés dans le PDF, chargez l'export de cette "
                        "date dans le panneau de gauche (sinon : un jour par export archivé).")
@@ -1437,10 +1770,14 @@ with onglet_mail:
         if pdf:
             g.download_button(f"⬇️ Aperçu du PDF ({nom_pdf})", data=pdf, file_name=nom_pdf,
                               mime="application/pdf", width="stretch")
+        for contenu_p, nom_p in pieces_planning:
+            g.download_button(f"⬇️ Aperçu du PDF ({nom_p})", data=contenu_p, file_name=nom_p,
+                              mime="application/pdf", width="stretch", key="apercu_pdf_planning")
         nom_eml = f"Mail_suivi_controle_lots_S{semaine_m}_{date_mail}.eml"
         d.download_button(
             "📧 Préparer le mail pour Outlook", type="primary", width="stretch", disabled=not pret,
-            data=(messagerie.fichier_outlook(a_valides, cc_valides, objet_mail, corps_mail, pdf, nom_pdf)
+            data=(messagerie.fichier_outlook(a_valides, cc_valides, objet_mail, corps_mail, pdf, nom_pdf,
+                                             pieces_planning)
                   if pret else b""),
             file_name=nom_eml, mime="message/rfc822",
             help="Télécharge un fichier de mail (destinataires, objet, texte et PDF joint) à ouvrir "
@@ -1448,7 +1785,7 @@ with onglet_mail:
         if pret:
             st.info(f"**Comment envoyer :** ① cliquez sur « 📧 Préparer le mail pour Outlook » ; "
                     f"② ouvrez le fichier téléchargé « {nom_eml} » (double-clic) : Outlook affiche un "
-                    "nouveau message déjà rempli, avec le PDF joint ; ③ relisez, puis cliquez sur "
+                    "nouveau message déjà rempli, avec le ou les PDF joints ; ③ relisez, puis cliquez sur "
                     "**Envoyer** dans Outlook.")
         else:
             st.caption("Le bouton s'active quand au moins un destinataire valide, un objet et un texte "
@@ -1459,10 +1796,10 @@ with onglet_mail:
                 "Le fichier de mail fonctionne avec **Outlook classique** (l'application de bureau "
                 "habituelle). Le « nouvel Outlook » de Windows ne sait pas toujours l'ouvrir comme un "
                 "message à envoyer. Dans ce cas :\n"
-                "1. téléchargez le PDF avec le bouton « ⬇️ Aperçu du PDF » ci-dessus ;\n"
+                "1. téléchargez le ou les PDF avec les boutons « ⬇️ Aperçu du PDF » ci-dessus ;\n"
                 "2. cliquez sur le bouton ci-dessous : un nouveau message s'ouvre dans votre messagerie, "
                 "avec les destinataires et l'objet ;\n"
-                "3. ajoutez le PDF en pièce jointe, relisez, puis envoyez.")
+                "3. ajoutez le ou les PDF en pièce jointe, relisez, puis envoyez.")
             if pret:
                 lien, texte_inclus = messagerie.lien_mailto(a_valides, cc_valides, objet_mail, corps_mail)
                 st.link_button("✉️ Ouvrir un nouveau message", lien, width="stretch")

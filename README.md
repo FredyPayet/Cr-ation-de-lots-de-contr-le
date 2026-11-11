@@ -13,6 +13,8 @@ aux bureaux de contrôle, et qui archive les résultats de chaque export.
 | `exports.py` | Fichiers Excel téléchargés (un fichier par fiche CEE, un onglet par lot) |
 | `stockage.py` | Archive et réglages (Google Sheet ou dossier local), lecture de la liste des clients |
 | `rapport_pdf.py` | Rapport PDF hebdomadaire (schéma du flux, indicateurs, graphiques) |
+| `planning.py` | Charge de travail de la semaine : priorités des lots, relances |
+| `planning_pdf.py` | PDF « Planning de la semaine », joint au mail en second document |
 | `messagerie.py` | Mail hebdomadaire : texte formel et fichier de mail à ouvrir dans Outlook |
 | `requirements.txt` | Bibliothèques Python nécessaires |
 | `.streamlit/config.toml` | Couleurs et taille maximale des fichiers chargés |
@@ -93,6 +95,7 @@ Google Sheet n'a pas été partagé avec l'adresse `client_email`.
 | Détail bénéficiaires | Opérations intégrées par bénéficiaire et par fiche CEE |
 | Lots par étape | Nombre de lots par étape de contrôle (pour le camembert) |
 | Bureaux en contrôle | Lots en cours de contrôle par bureau : ≤ 5 semaines / > 5 semaines / Rénovation globale audit |
+| Planning | Charge de travail de la semaine : une ligne par export (lots au planning, relances, lots à créer, délais utilisés) |
 | Graphiques | Camembert et histogramme empilé du **dernier export archivé**, plus l'histogramme du flux d'activité (un jour par export archivé), mis à jour à chaque archivage |
 | Paramètres | Pourcentages des bureaux et lien du Google Sheet clients |
 
@@ -163,6 +166,44 @@ Chaque ligne de l'export appartient à une seule catégorie :
 reste. Rechargez l'export concerné puis cliquez sur **➕ Compléter l'archive** : les indicateurs
 de suivi et les graphiques sont recalculés (délai de 5 semaines compté comme le jour de
 l'archivage d'origine). Les chiffres de création des lots ne sont pas modifiés.
+
+## Onglet « 🗓️ Planning » (charge de travail de la semaine)
+
+| Indicateur | Lots ou lignes concernés | Délai (modifiable) |
+|---|---|---|
+| Lots à passer en demande de coordonnées | Lots à l'étape « En cours de constitution » | 2 semaines entre la date de création du lot (colonne W) et la date de l'export |
+| Lots à envoyer | Lots à l'étape « En demande de coordonnées » | 5 semaines entre la date de création du lot et la date de l'export |
+| Lots à traiter | Lots à l'étape « Lot restitué » | 3 semaines entre la date de retour du lot (colonne AA) et la date de l'export |
+| Dossiers à relancer sans AH | Dossiers avec au moins une opération au Statut AH (colonne AH) « Attente AH » | — |
+| Opérations non satisfaisantes à relancer | Opérations au Statut du contrôle (colonne AC) « Contrôlé KO sur site » | — |
+| Lots à créer | Nombre de nouveaux lots de l'onglet « Création des lots » | — |
+
+Tous les lots sont listés, même ceux dans les délais, triés par priorité :
+1. 🔴 **Prioritaire** : l'échéance du lot (date réelle de réalisation la plus ancienne du lot
+   + 12 mois) tombe dans 3 mois ou moins à partir d'aujourd'hui, ou est déjà passée ;
+2. 🟠 **Délai dépassé** : l'âge du lot a atteint le délai ;
+3. 🟡 **À planifier cette semaine** : le délai sera atteint dans 7 jours ou moins ;
+4. 🟢 **Dans les délais**.
+
+Les priorités 1 à 3 forment le « planning de la semaine » (chiffre des cartes). Les délais se
+changent dans « ⚙️ Modifier les délais » et se conservent avec « 💾 Enregistrer ces délais ».
+Chaque liste s'exporte en Excel (avec le nombre d'opérations), et un bouton télécharge le
+planning complet. Les exports « sans AH » et « non satisfaisantes » donnent la DCTS,
+l'organisme, la date réelle de réalisation la plus ancienne du lot associé et son échéance.
+Les opérations abandonnées ne sont pas comptées dans ces deux listes.
+
+**PDF du planning** : le bouton « ⬇️ Télécharger le planning en PDF » crée un document distinct du
+rapport de suivi (les 6 chiffres, le graphique, les lots au planning de la semaine, les relances
+les plus urgentes). Dans l'onglet 📧, il est joint au mail en **second PDF** et annoncé dans le
+texte, à condition que l'export présenté soit celui chargé dans le panneau de gauche (case à
+décocher pour ne pas le joindre).
+
+**Archive des chiffres** : onglet « Planning » du Google Sheet, une ligne par export. Les
+chiffres sont archivés avec le bouton « 🗄️ Archiver les résultats » en haut de page, ou seuls avec
+« 🗄️ Archiver les chiffres du planning » (qui permet aussi de les remplacer après un changement
+de délais). À partir de deux exports archivés, l'onglet affiche l'évolution de la charge.
+
+Pour changer les libellés recherchés : `STATUT_ATTENTE_AH` et `STATUTS_KO` en haut de `planning.py`.
 
 ## Indicateurs de suivi archivés
 | Indicateur | Calcul |

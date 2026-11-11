@@ -13,6 +13,7 @@ Deux façons d'enregistrer l'archive et les réglages :
          - « Lots par étape »       : nombre de lots par étape de contrôle
          - « Bureaux en contrôle »  : lots en contrôle par bureau (≤ / > 5 semaines)
          - « Graphiques »           : camembert + histogramme du dernier export archivé
+         - « Planning »             : charge de travail de la semaine, une ligne par export
          - « Paramètres »           : pourcentages des bureaux, lien des clients
 
     2. LOCAL (secours) : dossier « donnees/ » à côté de l'application.
@@ -72,6 +73,22 @@ COLONNES_CATEGORIES = (
        for c, l in _FLUX for u, n in (("lots", "lots"), ("ops", "opé. des lots"))]
     + [(f"flux_periode_audit_{u}_{c}", f"Flux période audit réno. globale : {n} {l}")
        for c, l in _FLUX for u, n in (("lots", "lots"), ("ops", "opé. des lots"))]
+)
+
+_ACTIVITES_PLANNING = [("coordonnees", "À passer en coordonnées"), ("envoi", "À envoyer"),
+                       ("traitement", "À traiter")]
+COLONNES_PLANNING = (
+    [("date_export", "Date de l'export"), ("semaine_export", "Semaine de l'année"),
+     ("date_archivage", "Archivé le")]
+    + [(f"{c}_{k}", f"{l} : {n}") for c, l in _ACTIVITES_PLANNING for k, n in (
+        ("planning", "lots au planning"), ("total", "lots en tout"), ("prioritaires", "lots prioritaires"),
+        ("depasses", "lots délai dépassé"), ("a_planifier", "lots à planifier cette semaine"),
+        ("ops_planning", "opé. au planning"), ("ops_total", "opé. en tout"))]
+    + [("ah_dossiers", "Dossiers à relancer sans AH"), ("ah_ops", "Opé. en attente AH"),
+       ("ko_ops", "Opé. non satisfaisantes à relancer"), ("ko_dossiers", "Dossiers avec opé. non satisfaisantes"),
+       ("lots_a_creer", "Lots à créer"), ("ops_a_integrer", "Opé. à intégrer dans les lots à créer"),
+       ("delai_coordonnees_sem", "Délai coordonnées (semaines)"), ("delai_envoi_sem", "Délai envoi (semaines)"),
+       ("delai_traitement_sem", "Délai traitement (semaines)"), ("priorite_mois", "Échéance proche (mois)")]
 )
 
 TABLES = {
@@ -136,6 +153,7 @@ TABLES = {
         ("etape", "Étape de contrôle"),
         ("nb_lots", "Nb lots"),
     ]),
+    "planning": ("Planning", COLONNES_PLANNING),
     "bureaux": ("Bureaux en contrôle", [
         ("date_export", "Date de l'export"),
         ("bureau", "Bureau de contrôle"),
@@ -642,6 +660,19 @@ def archiver(archive_jour: dict) -> tuple[bool, str | None]:
         _stockage.ajouter(t, archive_jour[t])
     _cache.pop("archive", None)
     return True, _maj_graphiques()
+
+
+def archiver_planning(ligne: dict) -> bool:
+    """
+    Enregistre les chiffres du planning d'un export (onglet « Planning »), une ligne par date
+    d'export. Si la date existe déjà, sa ligne est remplacée. Renvoie True si c'était un remplacement.
+    """
+    existe = ligne["date_export"] in set(charger_archive(forcer=True)["planning"]["date_export"])
+    if existe:
+        _stockage.supprimer_date("planning", ligne["date_export"])
+    _stockage.ajouter("planning", pd.DataFrame([ligne]))
+    _cache.pop("archive", None)
+    return existe
 
 
 # Indicateurs ajoutés après coup (versions 4 et 5) : absents des exports archivés avant,
