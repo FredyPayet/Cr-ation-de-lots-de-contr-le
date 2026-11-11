@@ -60,6 +60,14 @@ TABLES = {
         ("ops_integrables_delai_2_mois", "Nb d'OP intégrables (délai > 2 mois)"),
         ("ops_en_creation", "Nb d'opé en création (constitution + coordonnées)"),
         ("ops_restitues", "Nb d'opé restituées (lots à traiter)"),
+        ("vol_en_creation", "Volume MWhc en création (constitution + coordonnées)"),
+        ("vol_en_constitution", "Volume MWhc en constitution"),
+        ("vol_demande_coordonnees", "Volume MWhc en demande de coordonnées"),
+        ("vol_en_controle", "Volume MWhc en cours de contrôle"),
+        ("vol_controle_plus_5_sem", "Dont volume MWhc en contrôle > 5 semaines"),
+        ("vol_restitues", "Volume MWhc restitué (lots à traiter)"),
+        ("vol_eligibles", "Volume MWhc éligible"),
+        ("vol_integrables_delai_2_mois", "Volume MWhc intégrable (délai > 2 mois)"),
         ("date_reference_flux", "Flux : jour de référence"),
         ("flux_lots_creation", "Flux : lots créés"),
         ("flux_ops_creation", "Flux : opé. des lots créés"),
@@ -67,6 +75,9 @@ TABLES = {
         ("flux_ops_envoi", "Flux : opé. des lots envoyés"),
         ("flux_lots_retour", "Flux : lots restitués"),
         ("flux_ops_retour", "Flux : opé. des lots restitués"),
+        ("flux_vol_creation", "Flux : volume MWhc des lots créés"),
+        ("flux_vol_envoi", "Flux : volume MWhc des lots envoyés"),
+        ("flux_vol_retour", "Flux : volume MWhc des lots restitués"),
         ("periode_debut", "Flux période : du (export précédent)"),
         ("periode_fin", "Flux période : au (export)"),
         ("flux_periode_lots_creation", "Flux période : lots créés"),
@@ -75,6 +86,9 @@ TABLES = {
         ("flux_periode_ops_envoi", "Flux période : opé. des lots envoyés"),
         ("flux_periode_lots_retour", "Flux période : lots restitués"),
         ("flux_periode_ops_retour", "Flux période : opé. des lots restitués"),
+        ("flux_periode_vol_creation", "Flux période : volume MWhc des lots créés"),
+        ("flux_periode_vol_envoi", "Flux période : volume MWhc des lots envoyés"),
+        ("flux_periode_vol_retour", "Flux période : volume MWhc des lots restitués"),
     ]),
     "detail": ("Détail bénéficiaires", [
         ("date_export", "Date de l'export"),
@@ -522,14 +536,19 @@ def archiver(archive_jour: dict) -> tuple[bool, str | None]:
 # Indicateurs ajoutés après coup (versions 4 et 5) : absents des exports archivés avant,
 # ils peuvent être ajoutés avec le bouton « Compléter l'archive ».
 INDICATEURS_FLUX = ["flux_lots_creation", "flux_ops_creation", "flux_lots_envoi",
-                    "flux_ops_envoi", "flux_lots_retour", "flux_ops_retour"]
+                    "flux_ops_envoi", "flux_lots_retour", "flux_ops_retour",
+                    "flux_vol_creation", "flux_vol_envoi", "flux_vol_retour"]
+INDICATEURS_VOLUME = ["vol_en_creation", "vol_en_constitution", "vol_demande_coordonnees",
+                      "vol_en_controle", "vol_controle_plus_5_sem", "vol_restitues",
+                      "vol_eligibles", "vol_integrables_delai_2_mois"]
 INDICATEURS_SUIVI = ["lots_en_constitution", "lots_demande_coordonnees", "lots_en_controle",
                      "ops_en_controle", "lots_controle_plus_5_sem", "ops_controle_plus_5_sem",
                      "lots_restitues", "ops_eligibles", "ops_integrables_delai_2_mois",
-                     "ops_en_creation", "ops_restitues", *INDICATEURS_FLUX]
+                     "ops_en_creation", "ops_restitues", *INDICATEURS_VOLUME, *INDICATEURS_FLUX]
 INDICATEURS_PERIODE = ["periode_debut", "periode_fin", "flux_periode_lots_creation",
                        "flux_periode_ops_creation", "flux_periode_lots_envoi", "flux_periode_ops_envoi",
-                       "flux_periode_lots_retour", "flux_periode_ops_retour"]
+                       "flux_periode_lots_retour", "flux_periode_ops_retour",
+                       "flux_periode_vol_creation", "flux_periode_vol_envoi", "flux_periode_vol_retour"]
 INDICATEURS_A_COMPLETER = INDICATEURS_SUIVI + ["date_reference_flux"] + INDICATEURS_PERIODE
 
 
@@ -548,7 +567,8 @@ def archive_incomplete(date_iso: str) -> bool:
     manque_indicateurs = ligne[INDICATEURS_SUIVI].isna().any(axis=None)
     # Flux entre deux exports : seulement s'il existe un export archivé avant celui-ci
     if (archive["synthese"]["date_export"] < date_iso).any():
-        manque_indicateurs = manque_indicateurs or bool(ligne["flux_periode_lots_creation"].isna().any())
+        manque_indicateurs = manque_indicateurs or bool(
+            ligne[["flux_periode_lots_creation", "flux_periode_vol_creation"]].isna().any(axis=None))
     manque_graphiques = (archive["etapes"]["date_export"] == date_iso).sum() == 0 \
         and (archive["bureaux"]["date_export"] == date_iso).sum() == 0
     return bool(manque_indicateurs or manque_graphiques)

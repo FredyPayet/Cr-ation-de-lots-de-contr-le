@@ -150,6 +150,20 @@ Google Sheet d'archive, ils sont conservés dans l'onglet « Paramètres ».
 Les délais sont calculés à la date du jour de l'archivage. Un lot en contrôle sans date
 d'envoi est compté dans « délai respecté ».
 
+## Volume CUMAC (colonne J « CUMAC MWhc TOTAL »)
+Pour chaque étape et chaque flux, l'application additionne le volume en MWhc de la colonne J,
+**en excluant les lignes dont la « Date réelle de réalisation » (colonne N) est vide**. Le
+volume est calculé pour :
+- les lots en création (constitution + coordonnées) ;
+- les lots en contrôle, dont ceux de plus de 5 semaines ;
+- les lots à traiter ;
+- les opérations éligibles et intégrables ;
+- les lots créés, envoyés et restitués (flux de la veille et flux entre deux exports).
+
+Ces volumes apparaissent dans le schéma (carrés), les indicateurs de l'Historique, le tableau
+« Indicateurs clés » et le tableau « Flux de la période » du PDF, le mail et le Google Sheet.
+Pour un export déjà archivé : rechargez-le puis cliquez sur « ➕ Compléter l'archive ».
+
 ## Flux d'activité archivé
 Pour chaque lot unique (colonne V), l'application lit la date de création (W), la date d'envoi
 (Z) et la date de retour (AA). Si un lot a plusieurs dates, elle garde la plus ancienne. Le

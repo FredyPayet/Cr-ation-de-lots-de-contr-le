@@ -18,7 +18,7 @@ import textwrap
 import matplotlib
 matplotlib.use("Agg")  # pas d'écran sur le serveur
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.patches import Circle, FancyArrowPatch  # noqa: E402
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
 import pandas as pd  # noqa: E402
 from reportlab.lib import colors  # noqa: E402
 from reportlab.lib.enums import TA_LEFT  # noqa: E402
@@ -89,48 +89,65 @@ def periode_flux(ligne: dict) -> tuple[str, str]:
 
 
 def schema_flux(ligne: dict):
-    """Schéma : flèche « créés » → 3 cercles (stocks) reliés par « envoyés » et « restitués »."""
-    fig, ax = plt.subplots(figsize=(10, 3.5))
+    """
+    Schéma : flèche « créés » → 3 carrés (stocks : lots, opérations, volume MWhc) reliés
+    par les flèches « envoyés » et « restitués » (flux de la période).
+    """
+    fig, ax = plt.subplots(figsize=(10, 3.45))
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)   # 1 unité = 1 pouce
     ax.set_xlim(0, 10)
-    ax.set_ylim(0, 3.5)
+    ax.set_ylim(0.3, 3.75)
     ax.set_aspect("equal")
     ax.axis("off")
     etapes = [
-        (2.7, BLEU, "#E6EEFA", "Lots en création", "Constitution + coordonnées",
-         _somme(ligne, "lots_en_constitution", "lots_demande_coordonnees"), ligne.get("ops_en_creation")),
-        (5.85, ORANGE, "#FDF0DC", "En cours de contrôle", "Chez les bureaux de contrôle",
-         ligne.get("lots_en_controle"), ligne.get("ops_en_controle")),
-        (9.0, VERT, "#E3F2E4", "Lots à traiter", "Étape « Lot restitué »",
-         ligne.get("lots_restitues"), ligne.get("ops_restitues")),
+        (2.6, BLEU, "#E6EEFA", "LOTS EN CRÉATION", "Constitution + coordonnées",
+         _somme(ligne, "lots_en_constitution", "lots_demande_coordonnees"), ligne.get("ops_en_creation"),
+         ligne.get("vol_en_creation")),
+        (5.8, ORANGE, "#FDF0DC", "EN COURS DE CONTRÔLE", "Chez les bureaux de contrôle",
+         ligne.get("lots_en_controle"), ligne.get("ops_en_controle"), ligne.get("vol_en_controle")),
+        (9.0, VERT, "#E3F2E4", "LOTS À TRAITER", "Étape « Lot restitué »",
+         ligne.get("lots_restitues"), ligne.get("ops_restitues"), ligne.get("vol_restitues")),
     ]
-    y, r = 2.05, 0.95
-    for x, c, fond, nom, detail, lots, ops in etapes:
-        ax.add_patch(Circle((x, y), r, facecolor=fond, edgecolor=c, linewidth=4))
-        ax.text(x, y + 0.2, _n(lots), ha="center", va="center", fontsize=24, fontweight="bold", color=TEXTE)
-        ax.text(x, y - 0.25, "lots", ha="center", va="center", fontsize=10, color=TEXTE_DOUX)
-        ax.text(x, y - 0.55, f"{_n(ops)} opé.", ha="center", va="center", fontsize=10,
+    y, cote = 2.15, 1.9            # centre vertical et côté des carrés
+    for x, c, fond, nom, detail, lots, ops, vol in etapes:
+        x0, y0 = x - cote / 2, y - cote / 2
+        ax.add_patch(FancyBboxPatch((x0, y0), cote, cote, boxstyle="round,pad=0,rounding_size=0.18",
+                                    facecolor=fond, edgecolor=c, linewidth=2))
+        ax.add_patch(FancyBboxPatch((x0, y0 + cote - 0.12), cote, 0.12,
+                                    boxstyle="round,pad=0,rounding_size=0.06", facecolor=c, edgecolor=c))
+        ax.text(x, y0 + cote - 0.33, nom, ha="center", va="center", fontsize=9, fontweight="bold", color=c)
+        ax.text(x, y + 0.22, _n(lots), ha="center", va="center", fontsize=30, fontweight="bold", color=TEXTE)
+        ax.text(x, y - 0.17, "lots", ha="center", va="center", fontsize=10.5, color=TEXTE_DOUX)
+        ax.plot([x0 + 0.15, x0 + cote - 0.15], [y - 0.38, y - 0.38], color="#CBD5E0", linewidth=0.8)
+        ax.text(x, y - 0.56, f"{_n(ops)} opérations", ha="center", va="center", fontsize=10.5,
+                fontweight="bold", color=TEXTE)
+        ax.text(x, y - 0.78, f"{_n(vol)} MWhc", ha="center", va="center", fontsize=10.5,
                 fontweight="bold", color=c)
-        ax.text(x, y - r - 0.25, nom, ha="center", va="center", fontsize=11, fontweight="bold", color=c)
-        ax.text(x, y - r - 0.55, detail, ha="center", va="center", fontsize=8.5, color=TEXTE_DOUX)
-    if ligne.get("lots_controle_plus_5_sem") is not None and not pd.isna(ligne.get("lots_controle_plus_5_sem")):
-        ax.text(5.85, y - r - 0.85, f"dont {_n(ligne['lots_controle_plus_5_sem'])} lots > 5 semaines",
-                ha="center", va="center", fontsize=8.5, fontweight="bold", color=ROUGE)
+        ax.text(x, y0 - 0.2, detail, ha="center", va="center", fontsize=9.5, color=TEXTE_DOUX)
+    if not pd.isna(ligne.get("lots_controle_plus_5_sem")):
+        ax.text(5.8, y - cote / 2 - 0.48,
+                f"dont {_n(ligne['lots_controle_plus_5_sem'])} lots > 5 semaines "
+                f"({_n(ligne.get('vol_controle_plus_5_sem'))} MWhc)",
+                ha="center", va="center", fontsize=9.5, fontweight="bold", color=ROUGE)
 
     prefixe, periode = periode_flux(ligne)
-    fleches = [((0.15, y), (2.7 - r - 0.08, y), GRIS, BLEU, "Créés", "creation", 0.9),
-               ((2.7 + r + 0.08, y), (5.85 - r - 0.08, y), BLEU, ORANGE, "Envoyés", "envoi", 4.27),
-               ((5.85 + r + 0.08, y), (9.0 - r - 0.08, y), ORANGE, VERT, "Restitués", "retour", 7.42)]
-    for debut, fin, c1, c2, titre, cle, xt in fleches:
-        ax.add_patch(FancyArrowPatch(debut, fin, arrowstyle="-|>", mutation_scale=18, linewidth=2.5,
+    m = cote / 2 + 0.06
+    fleches = [((0.05, y), (2.6 - m, y), BLEU, "Créés", "creation", 0.82),
+               ((2.6 + m, y), (5.8 - m, y), ORANGE, "Envoyés", "envoi", 4.2),
+               ((5.8 + m, y), (9.0 - m, y), VERT, "Restitués", "retour", 7.4)]
+    for debut, fin, c2, titre, cle, xt in fleches:
+        ax.add_patch(FancyArrowPatch(debut, fin, arrowstyle="-|>", mutation_scale=20, linewidth=2.6,
                                      color=c2, linestyle=(0, (4, 3))))
-        ax.text(xt, y + 0.62, titre.upper(), ha="center", va="bottom", fontsize=8, color=TEXTE_DOUX,
+        ax.text(xt, y + 0.92, titre.upper(), ha="center", va="bottom", fontsize=9, color=TEXTE_DOUX,
                 fontweight="bold")
-        ax.text(xt, y + 0.28, f"{_n(ligne.get(f'{prefixe}lots_{cle}'))} lots", ha="center", va="bottom",
-                fontsize=11, fontweight="bold", color=TEXTE)
-        ax.text(xt, y + 0.08, f"{_n(ligne.get(f'{prefixe}ops_{cle}'))} opé.", ha="center", va="bottom",
-                fontsize=8.5, color=TEXTE_DOUX)
-    ax.text(0.0, 3.45, f"Flèches : activité {periode}",
-            ha="left", va="top", fontsize=8.5, color=TEXTE_DOUX, style="italic")
+        ax.text(xt, y + 0.55, f"{_n(ligne.get(f'{prefixe}lots_{cle}'))} lots", ha="center", va="bottom",
+                fontsize=13, fontweight="bold", color=TEXTE)
+        ax.text(xt, y + 0.31, f"{_n(ligne.get(f'{prefixe}ops_{cle}'))} opé.", ha="center", va="bottom",
+                fontsize=9.5, color=TEXTE_DOUX)
+        ax.text(xt, y + 0.10, f"{_n(ligne.get(f'{prefixe}vol_{cle}'))} MWhc", ha="center", va="bottom",
+                fontsize=9.5, color=TEXTE_DOUX)
+    ax.text(0.02, 3.73, f"Flèches : activité {periode}", ha="left", va="top", fontsize=10,
+            color=TEXTE_DOUX, style="italic")
     return fig
 
 
@@ -237,19 +254,26 @@ def courbes_evolution(synthese: pd.DataFrame):
 # ============================================================================
 
 def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = None,
-                auteur: str = "") -> bytes:
+                auteur: str = "", ligne_maj: dict | None = None,
+                date_comparaison: str | None = None) -> bytes:
     """
-    archive    : {synthese, detail, etapes, bureaux} (stockage.charger_archive())
-    date_iso   : export à présenter ('2026-11-10')
-    flux_jours : flux des 20 derniers jours ouvrés (regles.flux_par_jour), facultatif ;
-                 à défaut, le flux archivé (un jour par export) est utilisé
+    archive          : {synthese, detail, etapes, bureaux} (stockage.charger_archive())
+    date_iso         : export à présenter ('2026-11-10')
+    flux_jours       : flux jour par jour (regles.flux_jours_periode ou flux_par_jour), facultatif ;
+                       à défaut, le flux archivé (un jour par export) est utilisé
+    ligne_maj        : chiffres de l'export présenté, si recalculés dans l'application
+                       (par exemple le flux entre deux dates choisies)
+    date_comparaison : export de comparaison (début de période) ; par défaut le précédent archivé
     """
     synthese = archive["synthese"].sort_values("date_export").reset_index(drop=True)
     lignes = synthese[synthese["date_export"] == date_iso]
     if lignes.empty:
         raise ValueError(f"L'export du {_d(date_iso)} n'est pas archivé.")
-    ligne = lignes.iloc[0].to_dict()
-    precedents = synthese[synthese["date_export"] < date_iso]
+    ligne = ligne_maj if ligne_maj is not None else lignes.iloc[0].to_dict()
+    if date_comparaison:
+        precedents = synthese[synthese["date_export"] == date_comparaison]
+    else:
+        precedents = synthese[synthese["date_export"] < date_iso]
     avant = precedents.iloc[-1].to_dict() if not precedents.empty else {}
     d_export = pd.Timestamp(date_iso)
     semaine = d_export.isocalendar().week
@@ -292,54 +316,89 @@ def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = 
     h.append(Spacer(1, 8))
     h.append(Paragraph("Flux du contrôle", styles["h2"]))
     h.append(_image(schema_flux(ligne), largeur / cm))
-    h.append(Paragraph("Cercles : stock de lots dans l'export. Flèches : lots créés, envoyés et restitués "
+    h.append(Paragraph("Carrés : stock de lots dans l'export. Flèches : lots créés, envoyés et restitués "
                        f"{periode_flux(ligne)[1]}. Opé. = nombre d'opérations de ces lots.",
                        styles["texte"]))
 
     h.append(Paragraph("Indicateurs clés", styles["h2"]))
+    def ind(lib, col, sous=False):
+        return (lib, ligne.get(col), avant.get(col), sous)
+
+    # Tableau en sections : None = ligne de titre de section
     lignes_tab = [
+        ("LOTS ET OPÉRATIONS", None, None, None),
         ("Lots en création (constitution + coordonnées)",
          _somme(ligne, "lots_en_constitution", "lots_demande_coordonnees"),
          _somme(avant, "lots_en_constitution", "lots_demande_coordonnees") if avant else None, False),
-        ("    dont en cours de constitution", ligne.get("lots_en_constitution"), avant.get("lots_en_constitution"), True),
-        ("    dont en demande de coordonnées", ligne.get("lots_demande_coordonnees"), avant.get("lots_demande_coordonnees"), True),
-        ("Lots en cours de contrôle", ligne.get("lots_en_controle"), avant.get("lots_en_controle"), False),
-        ("    dont envoyés depuis plus de 5 semaines", ligne.get("lots_controle_plus_5_sem"), avant.get("lots_controle_plus_5_sem"), True),
-        ("Opérations en cours de contrôle", ligne.get("ops_en_controle"), avant.get("ops_en_controle"), False),
-        ("    dont depuis plus de 5 semaines", ligne.get("ops_controle_plus_5_sem"), avant.get("ops_controle_plus_5_sem"), True),
-        ("Lots restitués à traiter", ligne.get("lots_restitues"), avant.get("lots_restitues"), False),
-        ("Opérations éligibles", ligne.get("ops_eligibles"), avant.get("ops_eligibles"), False),
-        ("    dont intégrables dans un lot (délai > 2 mois)", ligne.get("ops_integrables_delai_2_mois"), avant.get("ops_integrables_delai_2_mois"), True),
-        ("Opérations à intégrer dans des lots", ligne.get("nb_operations_a_integrer"), avant.get("nb_operations_a_integrer"), False),
-        ("Nouveaux lots à créer", ligne.get("nb_lots_a_creer"), avant.get("nb_lots_a_creer"), False),
-        ("Opérations ajoutées aux lots existants", ligne.get("nb_operations_ajoutees_lots_existants"), avant.get("nb_operations_ajoutees_lots_existants"), False),
+        ind("    dont en cours de constitution", "lots_en_constitution", True),
+        ind("    dont en demande de coordonnées", "lots_demande_coordonnees", True),
+        ind("Lots en cours de contrôle", "lots_en_controle"),
+        ind("    dont envoyés depuis plus de 5 semaines", "lots_controle_plus_5_sem", True),
+        ind("Opérations en cours de contrôle", "ops_en_controle"),
+        ind("    dont depuis plus de 5 semaines", "ops_controle_plus_5_sem", True),
+        ind("Lots restitués à traiter", "lots_restitues"),
+        ind("Opérations éligibles", "ops_eligibles"),
+        ind("    dont intégrables dans un lot (délai > 2 mois)", "ops_integrables_delai_2_mois", True),
+        ("VOLUME CUMAC (MWhc) — hors lignes sans date réelle de réalisation", None, None, None),
+        ind("Volume en création (constitution + coordonnées)", "vol_en_creation"),
+        ind("    dont en cours de constitution", "vol_en_constitution", True),
+        ind("    dont en demande de coordonnées", "vol_demande_coordonnees", True),
+        ind("Volume en cours de contrôle", "vol_en_controle"),
+        ind("    dont depuis plus de 5 semaines", "vol_controle_plus_5_sem", True),
+        ind("Volume restitué à traiter", "vol_restitues"),
+        ind("Volume éligible", "vol_eligibles"),
+        ind("    dont intégrable dans un lot (délai > 2 mois)", "vol_integrables_delai_2_mois", True),
+        ("CONSTITUTION DES LOTS", None, None, None),
+        ind("Opérations à intégrer dans des lots", "nb_operations_a_integrer"),
+        ind("Nouveaux lots à créer", "nb_lots_a_creer"),
+        ind("Opérations ajoutées aux lots existants", "nb_operations_ajoutees_lots_existants"),
     ]
     entete = ["Indicateur", f"Export\n{_d(date_iso)}",
               f"Export préc.\n{_d(avant.get('date_export'))}" if avant else "Export\nprécédent", "Évolution"]
-    donnees = [entete] + [[lib, _n(v), _n(a), _ecart(v, a)] for lib, v, a, _ in lignes_tab]
-    tab = Table(donnees, colWidths=[8.6 * cm, 3.0 * cm, 3.0 * cm, 3.2 * cm], repeatRows=1)
+    donnees = [entete] + [[lib, "", "", ""] if sous is None else [lib, _n(v), _n(a), _ecart(v, a)]
+                          for lib, v, a, sous in lignes_tab]
+    tab = Table(donnees, colWidths=[8.8 * cm, 3.0 * cm, 3.0 * cm, 3.0 * cm], repeatRows=1)
     style = [
-        ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 9),
-        ("FONT", (0, 1), (-1, -1), "Helvetica", 9),
+        ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8.5),
+        ("FONT", (0, 1), (-1, -1), "Helvetica", 8.5),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BLEU)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
     ]
     for i, (_, _, _, sous) in enumerate(lignes_tab, start=1):
-        if sous:
+        if sous is None:   # titre de section
+            style += [("SPAN", (0, i), (-1, i)), ("FONT", (0, i), (-1, i), "Helvetica-Bold", 7.5),
+                      ("TEXTCOLOR", (0, i), (-1, i), colors.HexColor(BLEU)),
+                      ("TOPPADDING", (0, i), (-1, i), 7), ("LINEBELOW", (0, i), (-1, i), 0.8, colors.HexColor(BLEU))]
+        elif sous:
             style.append(("TEXTCOLOR", (0, i), (-1, i), colors.HexColor(TEXTE_DOUX)))
         else:
-            style.append(("FONT", (0, i), (1, i), "Helvetica-Bold", 9))
+            style.append(("FONT", (0, i), (1, i), "Helvetica-Bold", 8.5))
             style.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#F3F6FA")))
     tab.setStyle(TableStyle(style))
     h.append(tab)
 
     # ---------------- Page 2 ----------------
-    h.append(PageBreak())
-    h.append(Paragraph("Répartition des lots", styles["h2"]))
+    prefixe, periode = periode_flux(ligne)
+    titre_flux = [Paragraph("Flux de la période", styles["h2"]),
+                  Paragraph(f"Activité {periode}.", styles["texte"]), Spacer(1, 4)]
+    flux_tab = [["", "Lots", "Opérations", "Volume (MWhc)"]] + [
+        [nom, _n(ligne.get(f"{prefixe}lots_{cle}")), _n(ligne.get(f"{prefixe}ops_{cle}")),
+         _n(ligne.get(f"{prefixe}vol_{cle}"))]
+        for nom, cle in (("Lots créés", "creation"), ("Lots envoyés aux bureaux de contrôle", "envoi"),
+                         ("Lots restitués", "retour"))]
+    tf = Table(flux_tab, colWidths=[8.8 * cm, 3.0 * cm, 3.0 * cm, 3.0 * cm])
+    tf.setStyle(TableStyle([
+        ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8.5), ("FONT", (0, 1), (-1, -1), "Helvetica", 8.5),
+        ("FONT", (1, 1), (1, -1), "Helvetica-Bold", 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BLEU)), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+    h.append(KeepTogether(titre_flux + [tf]))
     etapes = archive["etapes"][archive["etapes"]["date_export"] == date_iso]
     bureaux = archive["bureaux"][archive["bureaux"]["date_export"] == date_iso]
     duo = Table([[_image(camembert_etapes(etapes), largeur / cm / 2 - 0.2),
@@ -347,7 +406,7 @@ def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = 
                 colWidths=[largeur / 2, largeur / 2])
     duo.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
                              ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    h.append(duo)
+    h.append(KeepTogether([Paragraph("Répartition des lots", styles["h2"]), duo]))
 
     if flux_jours is None or flux_jours.empty:
         arch = synthese[synthese["flux_lots_creation"].notna() & (synthese["date_export"] <= date_iso)].tail(20)
@@ -355,6 +414,8 @@ def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = 
         for cle in ("creation", "envoi", "retour"):
             flux_jours[f"lots_{cle}"] = arch[f"flux_lots_{cle}"].astype(float).values
         source = "un jour par export archivé"
+    elif prefixe == "flux_periode_":
+        source = f"jour par jour {periode}"
     else:
         source = "20 derniers jours ouvrés, d'après l'export"
     h.append(KeepTogether([Paragraph("Flux d'activité", styles["h2"]),

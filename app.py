@@ -564,6 +564,8 @@ def confirmer_archive(archive: dict):
 - **{fr(s['lots_en_controle'])}** lots en cours de contrôle ({fr(s['ops_en_controle'])} opé.),
   dont **{fr(s['lots_controle_plus_5_sem'])}** depuis plus de 5 semaines ({fr(s['ops_controle_plus_5_sem'])} opé.)
 - **{fr(s['lots_restitues'])}** lots restitués
+- Volumes : **{fr(s['vol_en_creation'])}** MWhc en création, **{fr(s['vol_en_controle'])}** MWhc en contrôle,
+  **{fr(s['vol_restitues'])}** MWhc à traiter
 - **{fr(s['ops_eligibles'])}** opérations éligibles, dont **{fr(s['ops_integrables_delai_2_mois'])}** intégrables (délai > 2 mois)
 
 **Flux {periode_flux(s)[1]}**
@@ -705,46 +707,49 @@ CSS_FLUX = """
 <style>
 .fx-zone { container-type: inline-size; }
 .fx-carte { background: linear-gradient(135deg, #F8FAFD 0%, #EEF3FA 100%); border: 1px solid #E2E8F0;
-  border-radius: 20px; padding: 22px 18px 18px; margin-bottom: 8px; }
+  border-radius: 20px; padding: 20px 18px 18px; margin-bottom: 8px;
+  font-variant-numeric: tabular-nums; }
 .fx-entete { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap;
-  gap: 6px; margin: 0 6px 14px; }
-.fx-entete-titre { font-size: 15px; font-weight: 700; color: #1A202C; letter-spacing: .2px; }
-.fx-entete-jour { font-size: 14px; color: #4A5568; }
+  gap: 6px; margin: 0 4px 16px; }
+.fx-entete-titre { font-size: 15px; font-weight: 700; color: #1A202C; }
+.fx-entete-jour { font-size: 13px; color: #4A5568; }
 .fx-schema { display: flex; align-items: flex-start; justify-content: center; }
 
-/* Étapes (cercles) */
-.fx-etape { flex: 0 0 172px; display: flex; flex-direction: column; align-items: center; text-align: center; }
-.fx-rond { width: 164px; height: 164px; border-radius: 50%; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; position: relative;
-  background: radial-gradient(circle at 30% 25%, #FFFFFF 0%, var(--fond) 75%);
-  border: 6px solid var(--c); box-shadow: 0 10px 28px var(--ombre), inset 0 0 0 6px #FFFFFF; }
-.fx-icone { font-size: 24px; line-height: 1; margin-bottom: 2px; }
-.fx-grand { font-size: 46px; font-weight: 800; color: #1A202C; line-height: 1; letter-spacing: -1px; }
-.fx-unite { font-size: 14px; color: #4A5568; margin-top: 2px; }
-.fx-pastille { margin-top: 6px; font-size: 13px; font-weight: 700; color: var(--c); background: #FFFFFF;
-  border: 1px solid var(--c); border-radius: 999px; padding: 2px 10px; }
-.fx-nom { margin-top: 12px; font-size: 16px; font-weight: 700; color: var(--texte); }
-.fx-detail { font-size: 13px; color: #4A5568; line-height: 1.3; max-width: 170px; }
-.fx-alerte { margin-top: 6px; font-size: 13px; font-weight: 700; color: #9A3412; background: #FFF4E5;
+/* Étapes (carrés arrondis) */
+.fx-etape { flex: 0 0 184px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.fx-carre { width: 184px; min-height: 190px; box-sizing: border-box; border-radius: 18px;
+  background: #FFFFFF; border: 2px solid var(--c); border-top-width: 8px;
+  box-shadow: 0 10px 24px var(--ombre); padding: 12px 14px 12px;
+  display: flex; flex-direction: column; align-items: center; }
+.fx-nom { font-size: 12px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase;
+  color: var(--texte); line-height: 1.25; min-height: 30px; display: flex; align-items: center; gap: 6px; }
+.fx-grand { font-size: 40px; font-weight: 800; color: #1A202C; line-height: 1.05; margin-top: 4px;
+  letter-spacing: -.5px; }
+.fx-unite { font-size: 13px; color: #4A5568; margin-bottom: 8px; }
+.fx-stats { width: 100%; border-top: 1px solid #E2E8F0; padding-top: 8px; display: grid; gap: 3px; }
+.fx-stat { display: flex; justify-content: space-between; font-size: 13px; color: #4A5568; }
+.fx-stat b { color: #1A202C; font-weight: 700; }
+.fx-detail { margin-top: 8px; font-size: 12.5px; color: #4A5568; line-height: 1.3; max-width: 184px; }
+.fx-alerte { margin-top: 6px; font-size: 12.5px; font-weight: 700; color: #9A3412; background: #FFF4E5;
   border: 1px solid #F6C48A; border-radius: 999px; padding: 2px 10px; }
 
 /* Flux (flèches animées) */
-.fx-flux { flex: 1 1 120px; min-width: 112px; max-width: 150px; height: 164px; position: relative;
+.fx-flux { flex: 1 1 112px; min-width: 100px; max-width: 150px; height: 190px; position: relative;
   display: flex; align-items: center; justify-content: center; }
-.fx-badge { position: absolute; bottom: calc(50% + 16px); left: 50%; transform: translateX(-50%);
+.fx-badge { position: absolute; bottom: calc(50% + 14px); left: 50%; transform: translateX(-50%);
   background: #FFFFFF; border-radius: 12px; padding: 6px 10px; text-align: center; white-space: nowrap;
   box-shadow: 0 4px 14px rgba(26, 32, 44, .10); border: 1px solid #E2E8F0; }
-.fx-badge-titre { font-size: 12px; font-weight: 600; color: #4A5568; text-transform: uppercase;
-  letter-spacing: .4px; }
-.fx-badge-chiffre { font-size: 20px; font-weight: 800; color: #1A202C; line-height: 1.15; }
-.fx-badge-ops { font-size: 13px; color: #4A5568; }
+.fx-badge-titre { font-size: 11px; font-weight: 700; color: #4A5568; text-transform: uppercase;
+  letter-spacing: .6px; }
+.fx-badge-chiffre { font-size: 18px; font-weight: 800; color: #1A202C; line-height: 1.2; }
+.fx-badge-ops { font-size: 12px; color: #4A5568; line-height: 1.35; }
 .fx-trait { stroke-dasharray: 7 6; animation: fx-defile 0.9s linear infinite; }
 @keyframes fx-defile { to { stroke-dashoffset: -26; } }
 @media (prefers-reduced-motion: reduce) { .fx-trait { animation: none; } }
 .fx-v { display: none; }
 
 /* Zone étroite (tablette, mobile) : schéma de haut en bas */
-@container (max-width: 960px) {
+@container (max-width: 900px) {
   .fx-schema { flex-direction: column; align-items: center; }
   .fx-flux { flex: 0 0 auto; height: auto; max-width: none; flex-direction: column; padding: 10px 0; }
   .fx-badge { position: static; transform: none; margin-bottom: 6px; }
@@ -754,19 +759,21 @@ CSS_FLUX = """
 </style>
 """
 
-ETAPES_SCHEMA = {  # couleur principale, fond du cercle, ombre, couleur du titre
-    "creation": ("#1F5FAD", "#E6EEFA", "rgba(31, 95, 173, .22)", "#1A4C8B"),
-    "controle": ("#D97706", "#FDF0DC", "rgba(217, 119, 6, .22)", "#92400E"),
-    "traiter": ("#2E7D32", "#E3F2E4", "rgba(46, 125, 50, .22)", "#1B5E20"),
+ETAPES_SCHEMA = {  # couleur principale, fond, ombre, couleur du titre
+    "creation": ("#1F5FAD", "#E6EEFA", "rgba(31, 95, 173, .16)", "#1A4C8B"),
+    "controle": ("#D97706", "#FDF0DC", "rgba(217, 119, 6, .16)", "#92400E"),
+    "traiter": ("#2E7D32", "#E3F2E4", "rgba(46, 125, 50, .16)", "#1B5E20"),
 }
 
 
 def schema_flux(ligne: dict, jour_ref: str) -> str:
     """
-    Schéma du flux du contrôle (HTML) : 3 cercles = stocks de lots, flèches animées = flux
-    du jour ouvré de référence. De gauche à droite sur ordinateur, de haut en bas sur mobile.
+    Schéma du flux du contrôle (HTML) : 3 carrés = stocks de lots (lots, opérations,
+    volume CUMAC), flèches animées = flux de la période. De gauche à droite sur ordinateur,
+    de haut en bas sur mobile.
       Lots créés → [Lots en création] → Lots envoyés → [En cours de contrôle]
                  → Lots restitués → [Lots à traiter]
+    Volume = somme de la colonne J (MWhc), hors lignes sans date réelle de réalisation.
     """
     prefixe, periode = periode_flux(ligne)
 
@@ -774,13 +781,14 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
         return valeur(ligne, col)
 
     def fleche(n, titre, icone, cle, de, vers):
-        """Badge (lots + opérations du jour) posé sur une flèche dégradée et animée."""
+        """Badge (lots, opérations, volume) posé sur une flèche dégradée et animée."""
         c1, c2 = ETAPES_SCHEMA[de][0] if de else "#94A3B8", ETAPES_SCHEMA[vers][0]
         return (
             f'<div class="fx-flux">'
             f'<div class="fx-badge"><div class="fx-badge-titre">{icone} {titre}</div>'
             f'<div class="fx-badge-chiffre">{nb(f"{prefixe}lots_{cle}")} lots</div>'
-            f'<div class="fx-badge-ops">{nb(f"{prefixe}ops_{cle}")} opé.</div></div>'
+            f'<div class="fx-badge-ops">{nb(f"{prefixe}ops_{cle}")} opé.<br>'
+            f'{nb(f"{prefixe}vol_{cle}")} MWhc</div></div>'
             # flèche horizontale
             f'<svg class="fx-h" width="100%" height="28" viewBox="0 0 130 28" preserveAspectRatio="none" aria-hidden="true">'
             f'<defs><linearGradient id="fxg{n}" gradientUnits="userSpaceOnUse" x1="4" y1="14" x2="112" y2="14">'
@@ -797,20 +805,25 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
             f'<path d="M4 46 L14 62 L24 46 Z" fill="{c2}"/></svg>'
             f'</div>')
 
-    def cercle(cle, icone, nom, lots, ops, detail, extra=""):
+    def carre(cle, icone, nom, lots, ops, vol, detail, extra=""):
         c, fond, ombre, texte = ETAPES_SCHEMA[cle]
         return (
             f'<div class="fx-etape" style="--c:{c};--fond:{fond};--ombre:{ombre};--texte:{texte}">'
-            f'<div class="fx-rond"><div class="fx-icone">{icone}</div>'
+            f'<div class="fx-carre" style="background:linear-gradient(180deg,{fond} 0%,#FFFFFF 70%)">'
+            f'<div class="fx-nom"><span aria-hidden="true">{icone}</span>{nom}</div>'
             f'<div class="fx-grand">{lots}</div><div class="fx-unite">lots</div>'
-            f'<div class="fx-pastille">{ops} opé.</div></div>'
-            f'<div class="fx-nom">{nom}</div><div class="fx-detail">{detail}</div>{extra}</div>')
+            f'<div class="fx-stats">'
+            f'<div class="fx-stat"><span>Opérations</span><b>{ops}</b></div>'
+            f'<div class="fx-stat"><span>Volume</span><b>{vol} MWhc</b></div>'
+            f'</div></div>'
+            f'<div class="fx-detail">{detail}</div>{extra}</div>')
 
     lots_creation = "—"
     if not pd.isna(ligne.get("lots_en_constitution")) and not pd.isna(ligne.get("lots_demande_coordonnees")):
         lots_creation = fr(ligne["lots_en_constitution"] + ligne["lots_demande_coordonnees"])
     retard = ("" if pd.isna(ligne.get("lots_controle_plus_5_sem")) else
-              f'<div class="fx-alerte">⏱️ {nb("lots_controle_plus_5_sem")} lots &gt; 5 semaines</div>')
+              f'<div class="fx-alerte">⏱️ {nb("lots_controle_plus_5_sem")} lots &gt; 5 semaines'
+              f' · {nb("vol_controle_plus_5_sem")} MWhc</div>')
 
     return CSS_FLUX.replace("\n", "") + (
         f'<div class="fx-zone"><div class="fx-carte" role="group" aria-label="Schéma du flux du contrôle">'
@@ -818,14 +831,14 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
         f'<span class="fx-entete-jour">Flèches : activité <b>{periode}</b></span></div>'
         f'<div class="fx-schema">'
         + fleche(1, "Créés", "🆕", "creation", None, "creation")
-        + cercle("creation", "🧩", "Lots en création", lots_creation, nb("ops_en_creation"),
-                 "Constitution + demande de coordonnées")
+        + carre("creation", "🧩", "Lots en création", lots_creation, nb("ops_en_creation"),
+                nb("vol_en_creation"), "Constitution + demande de coordonnées")
         + fleche(2, "Envoyés", "📤", "envoi", "creation", "controle")
-        + cercle("controle", "🔍", "En cours de contrôle", nb("lots_en_controle"), nb("ops_en_controle"),
-                 "Chez les bureaux de contrôle", retard)
+        + carre("controle", "🔍", "En cours de contrôle", nb("lots_en_controle"), nb("ops_en_controle"),
+                nb("vol_en_controle"), "Chez les bureaux de contrôle", retard)
         + fleche(3, "Restitués", "📥", "retour", "controle", "traiter")
-        + cercle("traiter", "✅", "Lots à traiter", nb("lots_restitues"), nb("ops_restitues"),
-                 "Étape « Lot restitué »")
+        + carre("traiter", "✅", "Lots à traiter", nb("lots_restitues"), nb("ops_restitues"),
+                nb("vol_restitues"), "Étape « Lot restitué »")
         + '</div></div></div>')
 
 
@@ -885,6 +898,11 @@ with onglet_historique:
         choix_date = st.selectbox("Export", dates, format_func=lambda d: f"Export du {date_fr(d)}",
                                   key=f"date_situation_{dates[0]}")  # revient au plus récent après un archivage
         ligne = synthese_h[synthese_h["date_export"] == choix_date].iloc[0].to_dict()
+        # Flux entre deux exports absent de l'archive : calculé à partir de l'export chargé
+        precedent_h = max((d for d in dates if d < choix_date), default=None)
+        if (precedent_h and pd.isna(ligne.get("flux_periode_lots_creation")) and df is not None
+                and date_export is not None and date_export.isoformat() == choix_date):
+            ligne.update(regles.indicateurs_flux_periode(df, precedent_h, choix_date))
 
         st.markdown("**Création des lots**")
         c = st.columns(4)
@@ -918,6 +936,17 @@ with onglet_historique:
                     help="Intégrables = date de réalisation (ou prévisionnelle) + 12 mois au-delà "
                          "d'aujourd'hui + 2 mois.")
 
+        st.markdown("**Volume CUMAC (MWhc)** — colonne J, hors lignes sans date réelle de réalisation")
+        c = st.columns(4)
+        c[0].metric("Volume en création", valeur(ligne, "vol_en_creation"), border=True,
+                    help="Étapes « En cours de constitution » et « En demande de coordonnées ».")
+        c[1].metric("Volume en contrôle", valeur(ligne, "vol_en_controle"), border=True,
+                    help=f"Dont {valeur(ligne, 'vol_controle_plus_5_sem')} MWhc en contrôle depuis plus de 5 semaines.")
+        c[2].metric("Volume restitué à traiter", valeur(ligne, "vol_restitues"), border=True)
+        c[3].metric("Volume éligible / intégrable",
+                    f"{valeur(ligne, 'vol_eligibles')} / {valeur(ligne, 'vol_integrables_delai_2_mois')}",
+                    border=True)
+
         etapes = archive_h["etapes"][archive_h["etapes"]["date_export"] == choix_date]
         bureaux_h = archive_h["bureaux"][archive_h["bureaux"]["date_export"] == choix_date]
         g, d = st.columns(2)
@@ -942,7 +971,7 @@ with onglet_historique:
                     "export puis cliquez sur « ➕ Compléter l'archive » en haut de page.")
         st.markdown(schema_flux(ligne, jour_ref), unsafe_allow_html=True)
         prefixe_choisi, libelle_periode = periode_flux(ligne)
-        st.caption(f"Cercles : stock de lots dans l'export du {date_fr(choix_date)}. Flèches : lots "
+        st.caption(f"Carrés : stock de lots dans l'export du {date_fr(choix_date)}. Flèches : lots "
                    f"créés, envoyés et restitués {libelle_periode}. Opé. = nombre de lignes "
                    "(opérations) de ces lots."
                    + ("" if prefixe_choisi == "flux_periode_" else
@@ -1088,8 +1117,9 @@ with onglet_historique:
 
 @st.cache_data(show_spinner="Préparation du rapport PDF…", max_entries=2)
 def preparer_pdf(_archive: dict, cle_archive: str, date_iso: str, _flux: pd.DataFrame | None,
-                 cle_flux: str, auteur: str) -> bytes:
-    return rapport_pdf.generer_pdf(_archive, date_iso, _flux, auteur)
+                 cle_flux: str, auteur: str, _ligne: dict | None = None,
+                 date_comparaison: str | None = None) -> bytes:
+    return rapport_pdf.generer_pdf(_archive, date_iso, _flux, auteur, _ligne, date_comparaison)
 
 
 with onglet_mail:
@@ -1123,17 +1153,65 @@ with onglet_mail:
         parametres_mail = stockage.charger_parametres()
         dates_m = synthese_m["date_export"].tolist()[::-1]
 
-        # ---------------- 1. Export présenté ----------------
-        st.markdown("##### 1. Export présenté")
-        date_mail = st.selectbox("Export", dates_m, format_func=lambda d: f"Export du {date_fr(d)}",
-                                 key=f"date_mail_{dates_m[0]}")
+        # ---------------- 1. Période du rapport ----------------
+        st.markdown("##### 1. Période du rapport")
+        c1, c2 = st.columns(2)
+        date_mail = c1.selectbox("Export présenté (fin de période)", dates_m,
+                                 format_func=lambda d: f"Export du {date_fr(d)}", key=f"date_mail_{dates_m[0]}")
+        anterieures = [d for d in dates_m if d < date_mail]
+        date_comp = None
+        if anterieures:
+            date_comp = c2.selectbox("Comparé à l'export du (début de période)", anterieures,
+                                     format_func=lambda d: f"Export du {date_fr(d)}",
+                                     key=f"date_comp_{date_mail}_{anterieures[0]}",
+                                     help="Le flux compte les lots créés, envoyés et restitués entre ces deux "
+                                          "dates, incluses. Les chiffres sont aussi comparés à cet export.")
+        else:
+            c2.info("Archivez un export plus ancien pour obtenir le flux entre deux dates.")
+
         ligne_m = synthese_m[synthese_m["date_export"] == date_mail].iloc[0].to_dict()
-        precedents = synthese_m[synthese_m["date_export"] < date_mail]
-        avant_m = precedents.iloc[-1].to_dict() if not precedents.empty else None
+        avant_m = synthese_m[synthese_m["date_export"] == date_comp].iloc[0].to_dict() if date_comp else None
         if pd.isna(ligne_m.get("lots_en_constitution")) or pd.isna(ligne_m.get("flux_lots_creation")):
             st.warning(f"Certains indicateurs manquent pour l'export du {date_fr(date_mail)} (archivé avec une "
                        "version précédente) : ils apparaîtront en « — ». Rechargez cet export et cliquez sur "
                        "« ➕ Compléter l'archive » en haut de page.")
+
+        # Flux entre les deux dates : calculé sur l'export présenté (dates W, Z, AA des lots)
+        export_present_charge = (df is not None and date_export is not None
+                                 and date_export.isoformat() == date_mail)
+        flux_archive_ok = (ligne_m.get("periode_debut") == date_comp
+                           and not pd.isna(ligne_m.get("flux_periode_lots_creation")))
+        flux_periode_archive_vide = pd.isna(ligne_m.get("flux_periode_lots_creation"))
+        flux_periode_ok = False
+        if date_comp and export_present_charge:
+            ligne_m.update(regles.indicateurs_flux_periode(df, date_comp, date_mail))
+            flux_periode_ok = True
+            st.success(f"✅ Flux du {date_fr(date_comp)} au {date_fr(date_mail)} (dates incluses) calculé "
+                       f"sur l'export chargé : {fr(ligne_m['flux_periode_lots_creation'])} lots créés, "
+                       f"{fr(ligne_m['flux_periode_lots_envoi'])} envoyés, "
+                       f"{fr(ligne_m['flux_periode_lots_retour'])} restitués.")
+            if flux_periode_archive_vide:
+                if st.button("💾 Enregistrer ce flux dans l'archive",
+                             help="Pour le retrouver dans l'Historique et le Google Sheet sans recharger l'export."):
+                    try:
+                        valeurs = {k: ligne_m[k] for k in stockage.INDICATEURS_PERIODE}
+                        stockage._stockage.completer_ligne("synthese", date_mail, valeurs)
+                        stockage._cache.pop("archive", None)
+                        stockage._maj_graphiques()
+                        st.toast("Flux enregistré dans l'archive ✅")
+                    except Exception as e:
+                        st.error(f"Enregistrement impossible : {e}")
+        elif date_comp and flux_archive_ok:
+            flux_periode_ok = True
+            st.caption(f"✅ Flux du {date_fr(date_comp)} au {date_fr(date_mail)} repris de l'archive.")
+        elif date_comp:
+            # Pas d'export chargé et rien d'archivé pour cette période : flux de la veille
+            for k in stockage.INDICATEURS_PERIODE:
+                ligne_m[k] = None
+            st.warning(f"Pour avoir le flux du {date_fr(date_comp)} au {date_fr(date_mail)}, chargez l'export du "
+                       f"**{date_fr(date_mail)}** (Export_Controle_lots_de_travaux_BS_{date_mail}.xlsx) dans le "
+                       "panneau de gauche : le flux est calculé à partir des dates de cet export. En attendant, "
+                       "le mail et le PDF utilisent le flux du jour ouvré précédent.")
 
         # ---------------- 2. Destinataires ----------------
         st.markdown("##### 2. Destinataires")
@@ -1163,7 +1241,9 @@ with onglet_mail:
 
         # ---------------- 3. Contenu du mail ----------------
         st.markdown("##### 3. Mail")
-        cle_objet, cle_corps = f"objet_{date_mail}", f"corps_{date_mail}"
+        # Le texte proposé change si la période ou le flux disponible change
+        cle_objet = f"objet_{date_mail}"
+        cle_corps = f"corps_{date_mail}_{date_comp}_{flux_periode_ok}"
         if cle_objet not in st.session_state:
             st.session_state[cle_objet] = messagerie.objet_par_defaut(date_mail)
         if cle_corps not in st.session_state:
@@ -1180,9 +1260,9 @@ with onglet_mail:
         # ---------------- 4. Pièce jointe et brouillon ----------------
         st.markdown("##### 4. Pièce jointe et brouillon")
         flux_m = None
-        if df is not None and date_export is not None and date_export.isoformat() == date_mail:
-            if ligne_m.get("periode_debut") and not pd.isna(ligne_m.get("flux_periode_lots_creation")):
-                flux_m = regles.flux_jours_periode(df, ligne_m["periode_debut"], ligne_m["periode_fin"])
+        if export_present_charge:
+            if flux_periode_ok:
+                flux_m = regles.flux_jours_periode(df, date_comp, date_mail)
             else:
                 flux_m = regles.flux_par_jour(df, date_export, 20)
         semaine_m = pd.Timestamp(date_mail).isocalendar().week
@@ -1191,7 +1271,8 @@ with onglet_mail:
             cle_archive = hashlib.md5(pd.util.hash_pandas_object(synthese_m.astype(str)).values.tobytes()
                                       + str(len(archive_m["etapes"]) + len(archive_m["bureaux"])).encode()).hexdigest()
             pdf = preparer_pdf(archive_m, cle_archive, date_mail, flux_m,
-                               "20j" if flux_m is not None else "archive", signature)
+                               f"{'jours' if flux_m is not None else 'archive'}_{date_comp}_{flux_periode_ok}",
+                               signature, ligne_m, date_comp)
         except Exception as e:
             pdf = None
             st.error(f"Le PDF n'a pas pu être créé : {e}")

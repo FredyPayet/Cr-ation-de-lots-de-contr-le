@@ -34,6 +34,7 @@ COLONNES = [
     ("B", "DCTS", "dcts"),
     ("H", "Organisme", "organisme"),
     ("I", "SIREN de l'organisme", "siren"),
+    ("J", "CUMAC MWhc TOTAL", "volume"),
     ("L", "Date réelle d'engagement", "date_engagement"),
     ("M", "Date prévisionnelle de réalisation", "date_prev_realisation"),
     ("N", "Date réelle de réalisation", "date_realisation"),
@@ -254,6 +255,11 @@ def lire_export(fichier) -> pd.DataFrame:
     df["date_engagement"] = convertir_dates(df["date_engagement"])
     df["date_realisation"] = convertir_dates(df["date_realisation"])
     df["date_prev_realisation"] = convertir_dates(df["date_prev_realisation"])
+    # Volume CUMAC (MWhc) : texte « 1 234,5 » ou nombre ; vide -> 0
+    vol = df["volume"]
+    if not pd.api.types.is_numeric_dtype(vol):
+        vol = vol.astype(str).str.replace(" ", "").str.replace(" ", "").str.replace(",", ".")
+    df["volume"] = pd.to_numeric(vol, errors="coerce").fillna(0.0)
     df["date_envoi"] = convertir_dates(df["date_envoi"])
     df["date_creation_lot"] = convertir_dates(df["date_creation_lot"])
     df["date_retour"] = convertir_dates(df["date_retour"])
@@ -903,6 +909,25 @@ def indicateurs_suivi(df: pd.DataFrame, date_jour: date) -> tuple[dict, pd.DataF
         "ops_integrables_delai_2_mois": int(integrables.sum()),
     }
 
+    # Volumes CUMAC (MWhc, colonne J) : uniquement les lignes AVEC une date réelle de réalisation
+    avec_drr = df["date_realisation"].notna()
+
+    def volume(masque) -> int:
+        return int(round(float(df.loc[masque & avec_drr, "volume"].sum())))
+
+    est = lambda nom: etape == normaliser(nom)  # noqa: E731
+    indicateurs.update({
+        "vol_en_creation": volume(est(ETAPE_CONSTITUTION) | est(ETAPE_COORDONNEES)),
+        "vol_en_constitution": volume(est(ETAPE_CONSTITUTION)),
+        "vol_demande_coordonnees": volume(est(ETAPE_COORDONNEES)),
+        "vol_en_controle": volume(est(ETAPE_CONTROLE)),
+        "vol_controle_plus_5_sem": volume(est(ETAPE_CONTROLE) & df["lot"].isin(lots_retard)),
+        "vol_restitues": volume(est(ETAPE_RESTITUE)),
+        "vol_eligibles": volume(est(ETAPE_ELIGIBLE)),
+        "vol_integrables_delai_2_mois": volume(
+            df.index.isin(eligibles.index[integrables.values])),
+    })
+
     # Graphique 1 : lots par étape de contrôle (hors « Eligible » et vide)
     hors = df[a_un_lot & ~etape.isin(["", normaliser(ETAPE_ELIGIBLE)])]
     etapes = (hors.groupby("etape")["lot"].nunique().rename("nb_lots")
@@ -957,15 +982,18 @@ def jour_ouvre_precedent(d: date) -> date:
 def lots_et_dates(df: pd.DataFrame) -> pd.DataFrame:
     """
     Une ligne par lot unique (colonne V) : date de création (W), date d'envoi (Z),
-    date de retour (AA) et nombre d'opérations (nombre de lignes du lot).
+    date de retour (AA), nombre d'opérations (nombre de lignes du lot) et volume CUMAC
+    (MWhc, colonne J) des lignes qui ont une date réelle de réalisation.
     Si un lot a plusieurs dates différentes, la plus ancienne est retenue.
     """
     avec_lot = df[(df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))]
+    avec_lot = avec_lot.assign(volume_retenu=avec_lot["volume"].where(avec_lot["date_realisation"].notna(), 0.0))
     return avec_lot.groupby("lot").agg(
         date_creation=("date_creation_lot", "min"),
         date_envoi=("date_envoi", "min"),
         date_retour=("date_retour", "min"),
         nb_ops=("lot", "size"),
+        volume=("volume_retenu", "sum"),
     ).reset_index()
 
 
@@ -986,6 +1014,7 @@ def indicateurs_flux(df: pd.DataFrame, date_export: date) -> dict:
         du_jour = lots[lots[col] == jour]
         resultat[f"flux_lots_{cle}"] = int(len(du_jour))
         resultat[f"flux_ops_{cle}"] = int(du_jour["nb_ops"].sum())
+        resultat[f"flux_vol_{cle}"] = int(round(float(du_jour["volume"].sum())))
     return resultat
 
 
@@ -1003,6 +1032,7 @@ def indicateurs_flux_periode(df: pd.DataFrame, debut: date, fin: date) -> dict:
         dans_periode = lots[lots[col].between(d0, d1, inclusive="both")]
         resultat[f"flux_periode_lots_{cle}"] = int(len(dans_periode))
         resultat[f"flux_periode_ops_{cle}"] = int(dans_periode["nb_ops"].sum())
+        resultat[f"flux_periode_vol_{cle}"] = int(round(float(dans_periode["volume"].sum())))
     return resultat
 
 
@@ -1016,9 +1046,10 @@ def flux_jours_periode(df: pd.DataFrame, debut: date, fin: date) -> pd.DataFrame
     jours = pd.date_range(pd.Timestamp(debut), pd.Timestamp(fin), freq="D")
     t = pd.DataFrame({"jour": jours})
     for cle, col, _ in ETAPES_FLUX:
-        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"))
+        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"), v=("volume", "sum"))
         t[f"lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
         t[f"ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
+        t[f"vol_{cle}"] = t["jour"].map(par_jour["v"]).fillna(0).round().astype(int)
     ouvre = [j.weekday() < 5 and j.date() not in jours_feries(j.year) for j in t["jour"]]
     activite = t[[c for c in t.columns if c != "jour"]].sum(axis=1) > 0
     return t[pd.Series(ouvre, index=t.index) | activite].reset_index(drop=True)
@@ -1038,9 +1069,10 @@ def flux_par_jour(df: pd.DataFrame, date_export: date, nb_jours: int = 20) -> pd
     lots = lots_et_dates(df)
     t = pd.DataFrame({"jour": jours})
     for cle, col, _ in ETAPES_FLUX:
-        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"))
+        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"), v=("volume", "sum"))
         t[f"lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
         t[f"ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
+        t[f"vol_{cle}"] = t["jour"].map(par_jour["v"]).fillna(0).round().astype(int)
     return t
 
 

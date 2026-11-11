@@ -85,11 +85,12 @@ def phrase_flux(ligne: dict) -> str:
                                      f"{_d(ligne['periode_fin'])} inclus")
     else:
         p, debut = "flux_", f"Au cours de la journée du {_d(ligne.get('date_reference_flux'))}"
-    return (f"{debut}, {_n(ligne.get(p + 'lots_creation'))} lots ont été créés "
-            f"({_n(ligne.get(p + 'ops_creation'))} opérations), {_n(ligne.get(p + 'lots_envoi'))} lots "
-            f"ont été envoyés aux bureaux de contrôle ({_n(ligne.get(p + 'ops_envoi'))} opérations) et "
-            f"{_n(ligne.get(p + 'lots_retour'))} lots ont été restitués ({_n(ligne.get(p + 'ops_retour'))} "
-            "opérations).")
+    def detail(cle):
+        return f"{_n(ligne.get(p + 'ops_' + cle))} opérations, {_n(ligne.get(p + 'vol_' + cle))} MWhc cumac"
+    return (f"{debut}, {_n(ligne.get(p + 'lots_creation'))} lots ont été créés ({detail('creation')}), "
+            f"{_n(ligne.get(p + 'lots_envoi'))} lots ont été envoyés aux bureaux de contrôle "
+            f"({detail('envoi')}) et {_n(ligne.get(p + 'lots_retour'))} lots ont été restitués "
+            f"({detail('retour')}).")
 
 
 def corps_par_defaut(ligne: dict, avant: dict | None, signature: str) -> str:
@@ -106,12 +107,12 @@ def corps_par_defaut(ligne: dict, avant: dict | None, signature: str) -> str:
 
 Veuillez trouver ci-joint le point hebdomadaire relatif au suivi du contrôle des lots, établi à partir de l'export ODICEE du {_d(ligne.get('date_export'))}.
 
-Les principaux éléments à retenir sont les suivants :
+Les principaux éléments à retenir sont les suivants (volumes exprimés en MWh cumac, hors opérations sans date réelle de réalisation) :
 
-• Lots en création : {_n(creation)} lots ({_n(ligne.get('ops_en_creation'))} opérations), dont {_n(ligne.get('lots_en_constitution'))} en cours de constitution et {_n(ligne.get('lots_demande_coordonnees'))} en demande de coordonnées{_evolution(creation, creation_avant)} ;
-• Lots en cours de contrôle : {_n(ligne.get('lots_en_controle'))} lots ({_n(ligne.get('ops_en_controle'))} opérations){_evolution(ligne.get('lots_en_controle'), avant.get('lots_en_controle'))}, dont {_n(ligne.get('lots_controle_plus_5_sem'))} lots ({_n(ligne.get('ops_controle_plus_5_sem'))} opérations) envoyés depuis plus de cinq semaines ;
-• Lots restitués restant à traiter : {_n(ligne.get('lots_restitues'))} lots ({_n(ligne.get('ops_restitues'))} opérations){_evolution(ligne.get('lots_restitues'), avant.get('lots_restitues'))} ;
-• Opérations éligibles : {_n(ligne.get('ops_eligibles'))}, dont {_n(ligne.get('ops_integrables_delai_2_mois'))} intégrables dans un lot (délai de contrôle supérieur à deux mois) ;
+• Lots en création : {_n(creation)} lots ({_n(ligne.get('ops_en_creation'))} opérations, {_n(ligne.get('vol_en_creation'))} MWhc cumac), dont {_n(ligne.get('lots_en_constitution'))} en cours de constitution et {_n(ligne.get('lots_demande_coordonnees'))} en demande de coordonnées{_evolution(creation, creation_avant)} ;
+• Lots en cours de contrôle : {_n(ligne.get('lots_en_controle'))} lots ({_n(ligne.get('ops_en_controle'))} opérations, {_n(ligne.get('vol_en_controle'))} MWhc cumac){_evolution(ligne.get('lots_en_controle'), avant.get('lots_en_controle'))}, dont {_n(ligne.get('lots_controle_plus_5_sem'))} lots ({_n(ligne.get('ops_controle_plus_5_sem'))} opérations, {_n(ligne.get('vol_controle_plus_5_sem'))} MWhc cumac) envoyés depuis plus de cinq semaines ;
+• Lots restitués restant à traiter : {_n(ligne.get('lots_restitues'))} lots ({_n(ligne.get('ops_restitues'))} opérations, {_n(ligne.get('vol_restitues'))} MWhc cumac){_evolution(ligne.get('lots_restitues'), avant.get('lots_restitues'))} ;
+• Opérations éligibles : {_n(ligne.get('ops_eligibles'))} ({_n(ligne.get('vol_eligibles'))} MWhc cumac), dont {_n(ligne.get('ops_integrables_delai_2_mois'))} intégrables dans un lot ({_n(ligne.get('vol_integrables_delai_2_mois'))} MWhc cumac ; délai de contrôle supérieur à deux mois) ;
 • Constitution des lots : {_n(ligne.get('nb_lots_a_creer'))} nouveaux lots proposés pour {_n(ligne.get('nb_operations_a_integrer'))} opérations, dont {_n(ligne.get('nb_operations_ajoutees_lots_existants'))} ajoutées à des lots existants.
 
 {phrase_flux(ligne)}
@@ -122,7 +123,8 @@ Je reste à votre disposition pour tout complément d'information.
 
 Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
 
-{signature}"""
+{signature}""".replace("l'export précédent",
+                     f"l'export du {_d(avant.get('date_export'))}" if avant else "l'export précédent")
 
 
 def texte_vers_html(texte: str) -> str:
