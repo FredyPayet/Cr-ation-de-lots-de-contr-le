@@ -57,7 +57,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 COULEURS = {"actuel": "#8A9BB0", "apres": "#1F5FAD", "objectif": "#E08A00", "audit": "#7C3AED"}
-AUDIT = regles.CATEGORIE_AUDIT          # « Rénovation globale audit », suivie à part
+# « Rénovation globale audit », suivie à part (valeur de secours si regles.py est ancien :
+# le contrôle de version plus bas affiche alors un message clair)
+AUDIT = getattr(regles, "CATEGORIE_AUDIT", "Rénovation globale audit")
 # Google Sheet « Création de lots » : l'archive va dans son onglet « Archives données exports »
 URL_ARCHIVE_DEFAUT = "https://docs.google.com/spreadsheets/d/1_g1s7FYHFbV2tCML_h88iJBlBI5Lu-Vc00OL3lBrg3U/edit"
 JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
@@ -99,7 +101,14 @@ VERSION_CODE = hashlib.md5(b"".join(
 if not (hasattr(regles, "lignes_audit") and hasattr(stockage, "sans_categories")
         and hasattr(messagerie, "fichier_outlook") and hasattr(exports, "excel_tableau")
         and (rapport_pdf is None or hasattr(rapport_pdf, "AUDIT"))):
-    st.error("⚠️ Mise à jour incomplète : un des fichiers est d'une ancienne version. "
+    _anciens = [nom for nom, ok in [
+        ("regles.py", hasattr(regles, "lignes_audit")),
+        ("stockage.py", hasattr(stockage, "sans_categories")),
+        ("messagerie.py", hasattr(messagerie, "fichier_outlook")),
+        ("exports.py", hasattr(exports, "excel_tableau")),
+        ("rapport_pdf.py", rapport_pdf is None or hasattr(rapport_pdf, "AUDIT"))] if not ok]
+    st.error("⚠️ Mise à jour incomplète. Fichier(s) encore à l'ancienne version sur GitHub : "
+             + ", ".join(_anciens) + ". "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
              "stockage.py, messagerie.py, rapport_pdf.py) par ceux de la dernière version, "
              "puis redémarrez l'application.")
