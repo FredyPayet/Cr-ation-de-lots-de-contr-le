@@ -56,7 +56,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-COULEURS = {"actuel": "#8A9BB0", "apres": "#1F5FAD", "objectif": "#E08A00"}
+COULEURS = {"actuel": "#8A9BB0", "apres": "#1F5FAD", "objectif": "#E08A00", "audit": "#7C3AED"}
+AUDIT = regles.CATEGORIE_AUDIT          # « Rénovation globale audit », suivie à part
+# Google Sheet « Création de lots » : l'archive va dans son onglet « Archives données exports »
+URL_ARCHIVE_DEFAUT = "https://docs.google.com/spreadsheets/d/1_g1s7FYHFbV2tCML_h88iJBlBI5Lu-Vc00OL3lBrg3U/edit"
 JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 FORMAT_DATE = "DD/MM/YYYY"
 
@@ -93,11 +96,13 @@ VERSION_CODE = hashlib.md5(b"".join(
     open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
 
 # Vérification que tous les fichiers ont bien été mis à jour ensemble
-if not (hasattr(regles, "indicateurs_flux") and hasattr(stockage, "INDICATEURS_FLUX") and hasattr(messagerie, "creer_brouillon")
-        and hasattr(exports, "excel_tableau")):
-    st.error("⚠️ Mise à jour incomplète : le fichier « regles.py » est d'une ancienne version. "
+if not (hasattr(regles, "lignes_audit") and hasattr(stockage, "sans_categories")
+        and hasattr(messagerie, "fichier_outlook") and hasattr(exports, "excel_tableau")
+        and (rapport_pdf is None or hasattr(rapport_pdf, "AUDIT"))):
+    st.error("⚠️ Mise à jour incomplète : un des fichiers est d'une ancienne version. "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
-             "stockage.py) par ceux de la dernière version, puis redémarrez l'application.")
+             "stockage.py, messagerie.py, rapport_pdf.py) par ceux de la dernière version, "
+             "puis redémarrez l'application.")
     st.stop()
 
 
@@ -124,7 +129,7 @@ def charger_clients(url: str) -> dict:
 # ============================================================================
 
 # --- Où enregistrer l'archive et les réglages ? -------------------------------
-# Google Sheet si les secrets Streamlit contiennent [gcp_service_account] et [archive],
+# Google Sheet si les secrets Streamlit contiennent [gcp_service_account],
 # sinon dossier local (temporaire sur Streamlit Cloud). Voir README.md.
 
 @st.cache_resource(show_spinner="Connexion au Google Sheet d'archive…")
@@ -132,22 +137,12 @@ def connexion_google(identifiants_json: str, url: str):
     return stockage.StockageGoogle(json.loads(identifiants_json), url)
 
 
-def secrets_gmail() -> tuple[str, str] | None:
-    """Adresse Gmail et mot de passe d'application (secrets Streamlit, section [gmail])."""
-    try:
-        if "gmail" in st.secrets:
-            g = st.secrets["gmail"]
-            if g.get("adresse") and g.get("mot_de_passe_application"):
-                return g["adresse"], g["mot_de_passe_application"]
-    except Exception:
-        pass
-    return None
-
-
 def secrets_google() -> tuple[dict, str] | None:
     try:
-        if "gcp_service_account" in st.secrets and "archive" in st.secrets:
-            return dict(st.secrets["gcp_service_account"]), st.secrets["archive"]["google_sheet_url"]
+        if "gcp_service_account" in st.secrets:
+            # Lien du Google Sheet : celui des secrets s'il est indiqué, sinon « Création de lots »
+            url = st.secrets["archive"].get("google_sheet_url", "") if "archive" in st.secrets else ""
+            return dict(st.secrets["gcp_service_account"]), url or URL_ARCHIVE_DEFAUT
     except Exception:  # pas de fichier de secrets (utilisation en local)
         pass
     return None
@@ -174,7 +169,7 @@ with st.sidebar:
     infos = stockage.infos_stockage()
     if infos["mode"] == "google":
         st.caption(f"💾 Archive et réglages enregistrés dans le "
-                   f"[Google Sheet d'archive]({infos['url']}) ✅")
+                   f"[Google Sheet d'archive]({infos['url']}) (onglet « {stockage.ONGLET_SYNTHESE} ») ✅")
     elif erreur_stockage:
         st.error(f"⚠️ Google Sheet d'archive inaccessible : {erreur_stockage} "
                  "L'archive est enregistrée temporairement en attendant.")
@@ -548,7 +543,8 @@ def confirmer_archive(archive: dict):
     s = archive["synthese"]
     ou = ("dans le **Google Sheet d'archive**" if stockage.mode_stockage() == "google"
           else "**temporairement** (Google Sheet non configuré)")
-    st.markdown(f"Vous allez archiver l'export du **{date_fr(s['date_export'])}** {ou}.")
+    st.markdown(f"Vous allez archiver l'export du **{date_fr(s['date_export'])}** "
+                f"(semaine **{s['semaine_export']}**) {ou}.")
     g, d = st.columns(2)
     g.markdown(f"""
 **Création des lots**
@@ -558,7 +554,7 @@ def confirmer_archive(archive: dict):
 - détail pour **{archive['detail']['beneficiaire'].nunique()}** bénéficiaire(s)
 """)
     d.markdown(f"""
-**Suivi du contrôle**
+**Suivi du contrôle** (hors {AUDIT})
 - **{fr(s['lots_en_constitution'])}** lots en constitution
 - **{fr(s['lots_demande_coordonnees'])}** lots en demande de coordonnées
 - **{fr(s['lots_en_controle'])}** lots en cours de contrôle ({fr(s['ops_en_controle'])} opé.),
@@ -567,6 +563,13 @@ def confirmer_archive(archive: dict):
 - Volumes : **{fr(s['vol_en_creation'])}** MWhc en création, **{fr(s['vol_en_controle'])}** MWhc en contrôle,
   **{fr(s['vol_restitues'])}** MWhc à traiter
 - **{fr(s['ops_eligibles'])}** opérations éligibles, dont **{fr(s['ops_integrables_delai_2_mois'])}** intégrables (délai > 2 mois)
+- dont sans date réelle de réalisation : **{fr(s['sd_ops_en_creation'] + s['sd_ops_en_controle'] + s['sd_ops_restitues'])}** opé. dans des lots, **{fr(s['sd_ops_eligibles'])}** opé. éligibles
+
+**{AUDIT}** (BAR-TH-145 / 177 sans date réelle, suivie à part)
+- **{fr(s['audit_lots_en_constitution'] + s['audit_lots_demande_coordonnees'])}** lots en création ({fr(s['audit_ops_en_creation'])} opé.),
+  **{fr(s['audit_lots_en_controle'])}** en contrôle ({fr(s['audit_ops_en_controle'])} opé.),
+  **{fr(s['audit_lots_restitues'])}** restitués ({fr(s['audit_ops_restitues'])} opé.)
+- **{fr(s['audit_ops_eligibles'])}** opérations éligibles
 
 **Flux {periode_flux(s)[1]}**
 - 🆕 {fr(s[periode_flux(s)[0] + 'lots_creation'])} lots créés ({fr(s[periode_flux(s)[0] + 'ops_creation'])} opé.)
@@ -602,13 +605,19 @@ with zone_haut:
         if stockage.date_deja_archivee(date_iso) and stockage.archive_incomplete(date_iso):
             # Export archivé avec une version précédente : on peut ajouter les indicateurs
             # de suivi sans modifier les chiffres déjà archivés.
+            recalcul = stockage.sans_categories(date_iso)
             if bouton.button(f"➕ Compléter l'archive du {date_fr(date_export)}",
                              type="primary", width="stretch",
-                             help="Cet export a été archivé avant l'ajout des indicateurs de suivi "
-                                  "ou du flux d'activité. "
-                                  "Ce bouton les ajoute (ainsi que les graphiques) sans modifier "
-                                  "les chiffres de création des lots déjà archivés."):
-                archive_jour = regles.resume_archive(df, res, date_export, date.today(),
+                             help=(f"Cet export a été archivé avant la catégorie « {AUDIT} » : ce bouton "
+                                   "recalcule les indicateurs de suivi et les graphiques (la catégorie est "
+                                   "isolée, les lignes sans date réelle sont séparées). "
+                                   if recalcul else
+                                   "Cet export a été archivé avant l'ajout de certains indicateurs : ce "
+                                   "bouton les ajoute (ainsi que les graphiques). ")
+                                  + "Les chiffres de création des lots déjà archivés ne sont pas modifiés."):
+                # Délai de 5 semaines compté comme le jour de l'archivage d'origine
+                archive_jour = regles.resume_archive(df, res, date_export,
+                                                     stockage.date_archivage(date_iso) or date.today(),
                                                      stockage.date_precedente(date_iso))
                 try:
                     with st.spinner("Ajout des indicateurs de suivi…"):
@@ -699,6 +708,31 @@ def couper(texte: str, largeur: int = 14) -> str:
     return "<br>".join(lignes + [courante])
 
 
+def tableau_categories(ligne: dict) -> pd.DataFrame:
+    """Lots et opérations : avec / sans date réelle de réalisation, total, et catégorie audit."""
+    def somme(prefixe, cols):
+        vals = [ligne.get(prefixe + c) for c in cols]
+        return "—" if any(v is None or pd.isna(v) for v in vals) else fr(sum(int(v) for v in vals))
+
+    lignes_t = [
+        ("Lots en création (constitution + coordonnées)", ["lots_en_constitution", "lots_demande_coordonnees"]),
+        ("   dont en cours de constitution", ["lots_en_constitution"]),
+        ("   dont en demande de coordonnées", ["lots_demande_coordonnees"]),
+        ("Opérations en création", ["ops_en_creation"]),
+        ("Lots en cours de contrôle", ["lots_en_controle"]),
+        ("   dont envoyés depuis plus de 5 semaines", ["lots_controle_plus_5_sem"]),
+        ("Opérations en cours de contrôle", ["ops_en_controle"]),
+        ("   dont depuis plus de 5 semaines", ["ops_controle_plus_5_sem"]),
+        ("Lots restitués à traiter", ["lots_restitues"]),
+        ("Opérations restituées à traiter", ["ops_restitues"]),
+        ("Opérations éligibles", ["ops_eligibles"]),
+        ("   dont intégrables dans un lot (délai > 2 mois)", ["ops_integrables_delai_2_mois"]),
+    ]
+    return pd.DataFrame(
+        [[lib, somme("ad_", c), somme("sd_", c), somme("", c), somme("audit_", c)] for lib, c in lignes_t],
+        columns=["Indicateur", "Avec date réelle", "Sans date réelle", "Total (hors audit)", AUDIT])
+
+
 PALETTE_ETAPES = ["#1F5FAD", "#6A9BD8", "#E08A00", "#2E7D32", "#8A9BB0", "#7C3AED", "#0E7490", "#B45309"]
 
 
@@ -747,6 +781,19 @@ CSS_FLUX = """
 @keyframes fx-defile { to { stroke-dashoffset: -26; } }
 @media (prefers-reduced-motion: reduce) { .fx-trait { animation: none; } }
 .fx-v { display: none; }
+
+/* Catégorie « Rénovation globale audit » (suivie à part) */
+.fx-audit { margin-top: 18px; border: 2px solid #7C3AED; border-left-width: 8px; border-radius: 14px;
+  background: #F6F1FF; padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; }
+.fx-audit-titre { flex: 1 1 220px; font-size: 13px; font-weight: 700; color: #5B21B6; text-transform: uppercase;
+  letter-spacing: .5px; line-height: 1.3; }
+.fx-audit-titre span { display: block; font-size: 12.5px; font-weight: 400; color: #4A5568;
+  text-transform: none; letter-spacing: 0; }
+.fx-audit-blocs { flex: 3 1 420px; display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.fx-audit-bloc { background: #FFFFFF; border: 1px solid #DDD0FB; border-radius: 10px; padding: 8px 10px;
+  text-align: center; font-size: 12.5px; color: #4A5568; line-height: 1.35; }
+.fx-audit-bloc b { display: block; font-size: 17px; color: #1A202C; }
+.fx-audit-bloc i { font-style: normal; color: #5B21B6; font-weight: 600; }
 
 /* Zone étroite (tablette, mobile) : schéma de haut en bas */
 @container (max-width: 900px) {
@@ -825,6 +872,29 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
               f'<div class="fx-alerte">⏱️ {nb("lots_controle_plus_5_sem")} lots &gt; 5 semaines'
               f' · {nb("vol_controle_plus_5_sem")} MWhc</div>')
 
+    # Bandeau « Rénovation globale audit » : stocks et activité de la période, comptés à part
+    bandeau = ""
+    if not pd.isna(ligne.get("audit_lots_en_controle")):
+        lots_audit_creation = fr(ligne["audit_lots_en_constitution"] + ligne["audit_lots_demande_coordonnees"])
+
+        def bloc(nom, lots, ops, cle=None, verbe=""):
+            activite = (f'<br><i>{nb(f"{prefixe}audit_lots_{cle}")} {verbe} sur la période</i>' if cle else "")
+            return (f'<div class="fx-audit-bloc">{nom}<b>{lots}</b>{ops}{activite}</div>')
+
+        bandeau = (
+            f'<div class="fx-audit" role="group" aria-label="{AUDIT}">'
+            f'<div class="fx-audit-titre">🏠 {AUDIT}<span>Fiches BAR-TH-145 et BAR-TH-177 sans date réelle '
+            f'de réalisation — suivies à part, non comptées dans les carrés ci-dessus</span></div>'
+            f'<div class="fx-audit-blocs">'
+            + bloc("En création", f"{lots_audit_creation} lots", f'{nb("audit_ops_en_creation")} opé.',
+                   "creation", "créés")
+            + bloc("En contrôle", f'{nb("audit_lots_en_controle")} lots', f'{nb("audit_ops_en_controle")} opé.',
+                   "envoi", "envoyés")
+            + bloc("À traiter", f'{nb("audit_lots_restitues")} lots', f'{nb("audit_ops_restitues")} opé.',
+                   "retour", "restitués")
+            + bloc("Éligibles", f'{nb("audit_ops_eligibles")} opé.', "sans lot")
+            + '</div></div>')
+
     return CSS_FLUX.replace("\n", "") + (
         f'<div class="fx-zone"><div class="fx-carte" role="group" aria-label="Schéma du flux du contrôle">'
         f'<div class="fx-entete"><span class="fx-entete-titre">Stock de lots et activité</span>'
@@ -839,12 +909,17 @@ def schema_flux(ligne: dict, jour_ref: str) -> str:
         + fleche(3, "Restitués", "📥", "retour", "controle", "traiter")
         + carre("traiter", "✅", "Lots à traiter", nb("lots_restitues"), nb("ops_restitues"),
                 nb("vol_restitues"), "Étape « Lot restitué »")
-        + '</div></div></div>')
+        + '</div>' + bandeau + '</div></div>')
 
 
 def graphique_etapes(etapes: pd.DataFrame) -> go.Figure:
+    # La catégorie audit garde toujours la même couleur (violet, hachuré)
+    autres = iter([c for c in PALETTE_ETAPES if c != COULEURS["audit"]] * 3)
+    couleurs = [COULEURS["audit"] if e == AUDIT else next(autres) for e in etapes["etape"]]
+    motifs = ["/" if e == AUDIT else "" for e in etapes["etape"]]
     fig = go.Figure(go.Pie(labels=etapes["etape"], values=etapes["nb_lots"], hole=0.35,
-                           marker=dict(colors=PALETTE_ETAPES, line=dict(color="white", width=2)),
+                           marker=dict(colors=couleurs, pattern=dict(shape=motifs),
+                                       line=dict(color="white", width=2)),
                            textinfo="percent+value", sort=False,
                            hovertemplate="%{label} : %{value} lots (%{percent})<extra></extra>"))
     fig.update_layout(height=380, margin=dict(l=0, r=0, t=10, b=0), font=dict(size=14),
@@ -855,12 +930,15 @@ def graphique_etapes(etapes: pd.DataFrame) -> go.Figure:
 def graphique_bureaux(bureaux: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     noms = [couper(b) for b in bureaux["bureau"]]
-    for col, nom, coul in [("lots_delai_ok", "Délai respecté (≤ 5 semaines)", COULEURS["apres"]),
-                           ("lots_plus_5_sem", "Plus de 5 semaines", "#C2410C")]:
-        fig.add_bar(x=noms, y=bureaux[col], name=nom, marker_color=coul,
-                    text=[v if v else "" for v in bureaux[col]], textposition="inside",
+    bureaux = bureaux.assign(lots_audit=bureaux["lots_audit"].fillna(0))   # absent des anciennes archives
+    for col, nom, coul, motif in [("lots_delai_ok", "Délai respecté (≤ 5 semaines)", COULEURS["apres"], ""),
+                                  ("lots_plus_5_sem", "Plus de 5 semaines", "#C2410C", ""),
+                                  ("lots_audit", AUDIT, COULEURS["audit"], "/")]:
+        fig.add_bar(x=noms, y=bureaux[col], name=nom, marker_color=coul, marker_pattern_shape=motif,
+                    text=[int(v) if v else "" for v in bureaux[col]], textposition="inside",
                     hovertemplate="%{x} — " + nom + " : %{y} lot(s)<extra></extra>")
-    totaux = bureaux["lots_delai_ok"].fillna(0) + bureaux["lots_plus_5_sem"].fillna(0)
+    totaux = (bureaux["lots_delai_ok"].fillna(0) + bureaux["lots_plus_5_sem"].fillna(0)
+              + bureaux["lots_audit"])
     fig.add_scatter(x=noms, y=totaux, mode="text", text=[f"<b>{int(t)}</b>" for t in totaux],
                     textposition="top center", showlegend=False, hoverinfo="skip")
     fig.update_layout(barmode="stack", height=380, margin=dict(l=0, r=0, t=20, b=0),
@@ -912,7 +990,12 @@ with onglet_historique:
         c[3].metric("Ajoutées aux lots existants", valeur(ligne, "nb_operations_ajoutees_lots_existants"),
                     border=True)
 
-        st.markdown("**Suivi du contrôle**")
+        st.markdown(f"**Suivi du contrôle** — hors « {AUDIT} »")
+        if not pd.isna(ligne.get("lots_en_constitution")) and pd.isna(ligne.get("audit_lots_en_controle")):
+            st.warning(f"⚠️ L'export du {date_fr(choix_date)} a été archivé avant la catégorie « {AUDIT} » : "
+                       "ses chiffres ci-dessous comptent encore cette catégorie avec le reste. Pour les "
+                       f"recalculer, rechargez cet export (Export_Controle_lots_de_travaux_BS_{choix_date}.xlsx) "
+                       "puis cliquez sur « ➕ Compléter l'archive » en haut de page.")
         if pd.isna(ligne.get("lots_en_constitution")):
             st.info(f"ℹ️ L'export du {date_fr(choix_date)} a été archivé avant l'ajout des indicateurs "
                     "de suivi, d'où les « — ». Pour les ajouter : rechargez ce même export "
@@ -935,6 +1018,29 @@ with onglet_historique:
                     border=True,
                     help="Intégrables = date de réalisation (ou prévisionnelle) + 12 mois au-delà "
                          "d'aujourd'hui + 2 mois.")
+
+        # Catégorie isolée : fiches BAR-TH-145 / BAR-TH-177 sans date réelle de réalisation
+        st.markdown(f"**🏠 {AUDIT}** — fiches BAR-TH-145 et BAR-TH-177 sans date réelle de réalisation, "
+                    "comptées à part")
+        c = st.columns(4)
+        audit_creation = "—"
+        if not pd.isna(ligne.get("audit_lots_en_controle")):
+            audit_creation = fr(ligne["audit_lots_en_constitution"] + ligne["audit_lots_demande_coordonnees"])
+        c[0].metric("Audit : lots en création", audit_creation, border=True,
+                    help=f"{valeur(ligne, 'audit_ops_en_creation')} opérations (constitution + demande de coordonnées).")
+        c[1].metric("Audit : lots en contrôle", valeur(ligne, "audit_lots_en_controle"), border=True,
+                    help=f"{valeur(ligne, 'audit_ops_en_controle')} opérations, dont "
+                         f"{valeur(ligne, 'audit_lots_controle_plus_5_sem')} lots depuis plus de 5 semaines.")
+        c[2].metric("Audit : lots restitués", valeur(ligne, "audit_lots_restitues"), border=True,
+                    help=f"{valeur(ligne, 'audit_ops_restitues')} opérations.")
+        c[3].metric("Audit : opé. éligibles", valeur(ligne, "audit_ops_eligibles"), border=True)
+
+        st.markdown("**Lots et opérations : avec ou sans date réelle de réalisation**")
+        st.dataframe(tableau_categories(ligne), hide_index=True, width="stretch", height=35 * 13 + 3,
+                     column_config={"Indicateur": st.column_config.TextColumn(width="large")})
+        st.caption("« Total (hors audit) » = avec + sans date réelle pour les opérations. Un lot qui contient "
+                   "à la fois des lignes avec et sans date réelle est compté dans les deux colonnes. "
+                   f"La colonne « {AUDIT} » n'est comprise dans aucune autre.")
 
         st.markdown("**Volume CUMAC (MWhc)** — colonne J, hors lignes sans date réelle de réalisation")
         c = st.columns(4)
@@ -999,21 +1105,31 @@ with onglet_historique:
             for cle in ("creation", "envoi", "retour"):
                 flux_t[f"lots_{cle}"] = arch_flux[f"flux_lots_{cle}"].values
                 flux_t[f"ops_{cle}"] = arch_flux[f"flux_ops_{cle}"].values
+                for u in ("lots", "ops"):   # audit : absent des anciennes archives -> 0
+                    flux_t[f"audit_{u}_{cle}"] = arch_flux[f"flux_audit_{u}_{cle}"].fillna(0).astype(int).values
             source_flux = ("Calculé à partir des exports archivés (un jour par archive). Chargez un "
                            "export pour voir les 20 derniers jours ouvrés.")
         if flux_t.empty:
             st.info("Pas encore de flux à afficher.")
         else:
             fig = go.Figure()
+            jours_x = [f"{JOURS_FR[j.weekday()]} {j:%d/%m}" for j in flux_t["jour"]]
             for cle, nom, coul in [("creation", "Lots créés", COULEURS["apres"]),
                                    ("envoi", "Lots envoyés", COULEURS["objectif"]),
                                    ("retour", "Lots restitués", "#2E7D32")]:
                 fig.add_bar(
-                    x=[f"{JOURS_FR[j.weekday()]} {j:%d/%m}" for j in flux_t["jour"]],
-                    y=flux_t[f"{prefixe}_{cle}"],
+                    x=jours_x, y=flux_t[f"{prefixe}_{cle}"], offsetgroup=cle,
                     name=nom, marker_color=coul,
                     customdata=flux_t[[f"lots_{cle}", f"ops_{cle}"]].values,
                     hovertemplate="%{x} — " + nom + " : %{customdata[0]} lots, "
+                                  "%{customdata[1]} opérations<extra></extra>")
+                # Catégorie audit : posée au-dessus de la barre, violette et hachurée
+                fig.add_bar(
+                    x=jours_x, y=flux_t[f"audit_{prefixe}_{cle}"], base=flux_t[f"{prefixe}_{cle}"],
+                    offsetgroup=cle, name=f"{AUDIT} (en plus)", legendgroup="audit",
+                    showlegend=(cle == "creation"), marker_color=COULEURS["audit"], marker_pattern_shape="/",
+                    customdata=flux_t[[f"audit_lots_{cle}", f"audit_ops_{cle}"]].values,
+                    hovertemplate="%{x} — " + nom + f" ({AUDIT}) : " + "%{customdata[0]} lots, "
                                   "%{customdata[1]} opérations<extra></extra>")
             fig.update_layout(barmode="group", height=380, margin=dict(l=0, r=0, t=10, b=0),
                               font=dict(size=14, color="#1A202C"), plot_bgcolor="white",
@@ -1022,9 +1138,12 @@ with onglet_historique:
                               xaxis=dict(type="category", tickangle=-45))
             st.plotly_chart(fig, width="stretch")
             totaux = {cle: int(flux_t[f"{prefixe}_{cle}"].sum()) for cle in ("creation", "envoi", "retour")}
+            totaux_a = {cle: int(flux_t[f"audit_{prefixe}_{cle}"].sum()) for cle in ("creation", "envoi", "retour")}
             st.caption(f"{source_flux} Sur la période : {fr(totaux['creation'])} créés, "
                        f"{fr(totaux['envoi'])} envoyés, {fr(totaux['retour'])} restitués "
-                       f"({unite.lower()}).")
+                       f"({unite.lower()}, hors audit). {AUDIT}, en plus (partie violette hachurée) : "
+                       f"{fr(totaux_a['creation'])} créés, {fr(totaux_a['envoi'])} envoyés, "
+                       f"{fr(totaux_a['retour'])} restitués.")
 
         # ---------------- Évolution ----------------
         st.markdown("#### Évolution d'un export à l'autre")
@@ -1046,6 +1165,33 @@ with onglet_historique:
         if len(synthese_h) < 6:
             fig.update_traces(width=0.35, selector=dict(type="bar"))
         st.plotly_chart(fig, width="stretch")
+
+        # Stocks de lots d'un export à l'autre, dont la catégorie audit
+        stocks = synthese_h[synthese_h["lots_en_controle"].notna()]
+        if len(stocks) >= 2:
+            st.markdown("**Stocks de lots**")
+            x_s = pd.to_datetime(stocks["date_export"]).dt.strftime("%d/%m/%Y")
+            f64 = lambda c: stocks[c].astype("Float64")  # noqa: E731
+            series = [("Lots en création", f64("lots_en_constitution") + f64("lots_demande_coordonnees"),
+                       COULEURS["apres"], "solid", "circle"),
+                      ("Lots en contrôle", f64("lots_en_controle"), COULEURS["objectif"], "solid", "circle"),
+                      ("dont > 5 semaines", f64("lots_controle_plus_5_sem"), "#C2410C", "dash", "diamond"),
+                      ("Lots à traiter", f64("lots_restitues"), "#2E7D32", "solid", "circle"),
+                      (f"{AUDIT} (tous ses lots)",
+                       f64("audit_lots_en_constitution") + f64("audit_lots_demande_coordonnees")
+                       + f64("audit_lots_en_controle") + f64("audit_lots_restitues"),
+                       COULEURS["audit"], "dot", "square")]
+            fig = go.Figure()
+            for nom, y, coul, trait, marque in series:
+                fig.add_scatter(x=x_s, y=y.astype(float), name=nom, mode="lines+markers",
+                                line=dict(color=coul, width=3, dash=trait),
+                                marker=dict(size=9, symbol=marque),
+                                hovertemplate="%{x} — " + nom + " : %{y} lots<extra></extra>")
+            fig.update_layout(height=340, margin=dict(l=0, r=0, t=10, b=0), font=dict(size=14),
+                              legend=dict(orientation="h", y=-0.2), plot_bgcolor="white",
+                              xaxis=dict(type="category"),
+                              yaxis=dict(title="Nombre de lots", gridcolor="#E5E9F0", rangemode="tozero"))
+            st.plotly_chart(fig, width="stretch")
 
         vue_synthese = synthese_h.assign(date_export=etiquettes).iloc[::-1] \
             .rename(columns=LIBELLES["synthese"])
@@ -1078,7 +1224,7 @@ with onglet_historique:
             tab = tab.assign(date_export=pd.to_datetime(tab["date_export"]).dt.strftime("%d/%m/%Y"))
             return tab.rename(columns=LIBELLES[t])
 
-        onglets = {"Synthèse": filtre("synthese"), "Détail bénéficiaires": pivot,
+        onglets = {stockage.ONGLET_SYNTHESE: filtre("synthese"), "Détail bénéficiaires": pivot,
                    "Lots par étape": filtre("etapes"), "Bureaux en contrôle": filtre("bureaux")}
         nom = "toutes_dates" if choix == TOUTES else choix
         st.download_button(
@@ -1112,7 +1258,7 @@ with onglet_historique:
 
 
 # ============================================================================
-# 8. ONGLET « RAPPORT HEBDOMADAIRE » (mail aux managers, déposé en brouillon Gmail)
+# 8. ONGLET « RAPPORT HEBDOMADAIRE » (mail aux managers, à envoyer depuis Outlook)
 # ============================================================================
 
 @st.cache_data(show_spinner="Préparation du rapport PDF…", max_entries=2)
@@ -1123,16 +1269,10 @@ def preparer_pdf(_archive: dict, cle_archive: str, date_iso: str, _flux: pd.Data
 
 
 with onglet_mail:
-    gmail = secrets_gmail()
     st.markdown("Préparez le **mail hebdomadaire** pour vos managers, avec le récapitulatif des chiffres "
-                "et les graphiques en **PDF**. Le mail est déposé dans vos **brouillons Gmail** : rien "
-                "n'est envoyé tant que vous ne cliquez pas sur « Envoyer » dans Gmail.")
-    if gmail:
-        st.caption(f"📮 Boîte d'envoi : **{gmail[0]}** ✅")
-    else:
-        st.warning("Gmail n'est pas encore configuré : vous pouvez préparer le mail et télécharger le PDF, "
-                   "mais pas créer le brouillon. Ajoutez la section [gmail] aux secrets Streamlit "
-                   "(adresse + mot de passe d'application, voir README.md).")
+                "et les graphiques en **PDF**. Le mail s'ouvre ensuite dans **Outlook** sur votre "
+                "ordinateur : rien n'est envoyé tant que vous ne cliquez pas sur « Envoyer » dans Outlook.")
+    st.caption("📮 L'envoi se fait depuis votre application Outlook : aucun mot de passe à configurer.")
 
     try:
         archive_m = stockage.charger_archive()
@@ -1257,8 +1397,8 @@ with onglet_mail:
             st.session_state[cle_corps] = messagerie.corps_par_defaut(ligne_m, avant_m, signature)
             st.rerun()
 
-        # ---------------- 4. Pièce jointe et brouillon ----------------
-        st.markdown("##### 4. Pièce jointe et brouillon")
+        # ---------------- 4. Pièce jointe et envoi depuis Outlook ----------------
+        st.markdown("##### 4. Pièce jointe et envoi depuis Outlook")
         flux_m = None
         if export_present_charge:
             if flux_periode_ok:
@@ -1280,26 +1420,45 @@ with onglet_mail:
             st.caption("ℹ️ Pour un graphique de flux sur 20 jours ouvrés dans le PDF, chargez l'export de cette "
                        "date dans le panneau de gauche (sinon : un jour par export archivé).")
 
+        objet_mail = st.session_state[cle_objet].strip()
+        corps_mail = st.session_state[cle_corps]
+        pret = bool(a_valides and not a_invalides and not cc_invalides and pdf
+                    and objet_mail and corps_mail.strip())
         g, d = st.columns(2)
         if pdf:
             g.download_button(f"⬇️ Aperçu du PDF ({nom_pdf})", data=pdf, file_name=nom_pdf,
                               mime="application/pdf", width="stretch")
-        pret = bool(gmail and a_valides and not a_invalides and not cc_invalides and pdf
-                    and st.session_state[cle_objet].strip() and st.session_state[cle_corps].strip())
-        if d.button("📝 Créer le brouillon dans Gmail", type="primary", width="stretch", disabled=not pret,
-                    help="Dépose le mail (avec le PDF) dans vos brouillons Gmail. Il ne sera pas envoyé."):
-            try:
-                with st.spinner("Création du brouillon dans Gmail…"):
-                    message = messagerie.construire_message(
-                        gmail[0], a_valides, cc_valides, st.session_state[cle_objet].strip(),
-                        st.session_state[cle_corps], pdf, nom_pdf)
-                    dossier = messagerie.creer_brouillon(gmail[0], gmail[1], message)
-                st.success(f"✅ Brouillon créé dans « {dossier} » de {gmail[0]}, avec le PDF en pièce jointe. "
-                           f"[Ouvrir les brouillons Gmail](https://mail.google.com/mail/u/?authuser={gmail[0]}#drafts) "
-                           "pour le relire puis l'envoyer.")
-            except messagerie.ErreurMessagerie as e:
-                st.error(f"⚠️ {e}")
-            except Exception as e:
-                st.error(f"⚠️ Le brouillon n'a pas pu être créé : {e}")
-        if not pret and gmail:
-            st.caption("Le bouton s'active quand au moins un destinataire valide, un objet et un texte sont renseignés.")
+        nom_eml = f"Mail_suivi_controle_lots_S{semaine_m}_{date_mail}.eml"
+        d.download_button(
+            "📧 Préparer le mail pour Outlook", type="primary", width="stretch", disabled=not pret,
+            data=(messagerie.fichier_outlook(a_valides, cc_valides, objet_mail, corps_mail, pdf, nom_pdf)
+                  if pret else b""),
+            file_name=nom_eml, mime="message/rfc822",
+            help="Télécharge un fichier de mail (destinataires, objet, texte et PDF joint) à ouvrir "
+                 "dans Outlook. Rien n'est envoyé par l'application.")
+        if pret:
+            st.info(f"**Comment envoyer :** ① cliquez sur « 📧 Préparer le mail pour Outlook » ; "
+                    f"② ouvrez le fichier téléchargé « {nom_eml} » (double-clic) : Outlook affiche un "
+                    "nouveau message déjà rempli, avec le PDF joint ; ③ relisez, puis cliquez sur "
+                    "**Envoyer** dans Outlook.")
+        else:
+            st.caption("Le bouton s'active quand au moins un destinataire valide, un objet et un texte "
+                       "sont renseignés.")
+
+        with st.expander("Le fichier ne s'ouvre pas comme un nouveau message ? (« nouvel Outlook »)"):
+            st.markdown(
+                "Le fichier de mail fonctionne avec **Outlook classique** (l'application de bureau "
+                "habituelle). Le « nouvel Outlook » de Windows ne sait pas toujours l'ouvrir comme un "
+                "message à envoyer. Dans ce cas :\n"
+                "1. téléchargez le PDF avec le bouton « ⬇️ Aperçu du PDF » ci-dessus ;\n"
+                "2. cliquez sur le bouton ci-dessous : un nouveau message s'ouvre dans votre messagerie, "
+                "avec les destinataires et l'objet ;\n"
+                "3. ajoutez le PDF en pièce jointe, relisez, puis envoyez.")
+            if pret:
+                lien, texte_inclus = messagerie.lien_mailto(a_valides, cc_valides, objet_mail, corps_mail)
+                st.link_button("✉️ Ouvrir un nouveau message", lien, width="stretch")
+                if not texte_inclus:
+                    st.caption("Le texte est trop long pour être placé automatiquement : copiez-le "
+                               "ci-dessous (bouton de copie en haut à droite du cadre) et collez-le "
+                               "dans le message.")
+                    st.code(corps_mail, language=None, wrap_lines=True)

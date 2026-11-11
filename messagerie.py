@@ -1,28 +1,23 @@
 """
-messagerie.py — Mail hebdomadaire aux managers (brouillon Gmail)
-================================================================
+messagerie.py — Mail hebdomadaire aux managers (envoi depuis Outlook)
+=====================================================================
 
-Le mail est déposé dans les BROUILLONS de la boîte Gmail configurée : rien n'est
-envoyé automatiquement. Vous l'ouvrez dans Gmail, le relisez, puis cliquez sur Envoyer.
+L'application n'envoie rien elle-même et ne se connecte à aucune boîte mail : elle
+prépare un fichier « .eml » (destinataires, objet, texte, PDF joint). Un double-clic
+l'ouvre dans l'application Outlook de l'ordinateur comme un nouveau message : vous le
+relisez, puis vous cliquez sur Envoyer. Aucun mot de passe n'est nécessaire.
 
-Connexion : IMAP de Gmail avec un « mot de passe d'application » (16 lettres), indiqué
-dans les secrets Streamlit (section [gmail], voir README.md).
-
-Organisation : 1. Adresses  2. Texte du mail (ton formel)  3. Création du brouillon
+Organisation : 1. Adresses  2. Texte du mail (ton formel)  3. Mail prêt pour Outlook
 """
 from __future__ import annotations
 
 import html
-import imaplib
 import re
-import time
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.policy import SMTP
+from urllib.parse import quote
 
 import pandas as pd
-
-SERVEUR_IMAP = "imap.gmail.com"
-
 
 # ============================================================================
 # 1. ADRESSES
@@ -85,12 +80,35 @@ def phrase_flux(ligne: dict) -> str:
                                      f"{_d(ligne['periode_fin'])} inclus")
     else:
         p, debut = "flux_", f"Au cours de la journée du {_d(ligne.get('date_reference_flux'))}"
+    audit = ""
+    if not pd.isna(ligne.get(p + "audit_lots_creation")):
+        audit = (f" S'y ajoutent, pour la catégorie Rénovation globale audit, "
+                 f"{_n(ligne.get(p + 'audit_lots_creation'))} lots créés, "
+                 f"{_n(ligne.get(p + 'audit_lots_envoi'))} lots envoyés et "
+                 f"{_n(ligne.get(p + 'audit_lots_retour'))} lots restitués.")
+
     def detail(cle):
         return f"{_n(ligne.get(p + 'ops_' + cle))} opérations, {_n(ligne.get(p + 'vol_' + cle))} MWhc cumac"
     return (f"{debut}, {_n(ligne.get(p + 'lots_creation'))} lots ont été créés ({detail('creation')}), "
             f"{_n(ligne.get(p + 'lots_envoi'))} lots ont été envoyés aux bureaux de contrôle "
             f"({detail('envoi')}) et {_n(ligne.get(p + 'lots_retour'))} lots ont été restitués "
-            f"({detail('retour')}).")
+            f"({detail('retour')})." + audit)
+
+
+def _puce_audit(ligne: dict) -> str:
+    """Ligne du mail sur la catégorie « Rénovation globale audit » (vide si non archivée)."""
+    v = ligne.get("audit_lots_en_controle")
+    if v is None or pd.isna(v):
+        return ""
+    creation = int(ligne["audit_lots_en_constitution"]) + int(ligne["audit_lots_demande_coordonnees"])
+    return (f"• Rénovation globale audit (fiches BAR-TH-145 et BAR-TH-177 sans date réelle de "
+            f"réalisation, non comptées ci-dessus) : {_n(creation)} lots en création "
+            f"({_n(ligne.get('audit_ops_en_creation'))} opérations), "
+            f"{_n(ligne.get('audit_lots_en_controle'))} lots en cours de contrôle "
+            f"({_n(ligne.get('audit_ops_en_controle'))} opérations), "
+            f"{_n(ligne.get('audit_lots_restitues'))} lots restitués "
+            f"({_n(ligne.get('audit_ops_restitues'))} opérations) et "
+            f"{_n(ligne.get('audit_ops_eligibles'))} opérations éligibles ;\n")
 
 
 def corps_par_defaut(ligne: dict, avant: dict | None, signature: str) -> str:
@@ -107,13 +125,13 @@ def corps_par_defaut(ligne: dict, avant: dict | None, signature: str) -> str:
 
 Veuillez trouver ci-joint le point hebdomadaire relatif au suivi du contrôle des lots, établi à partir de l'export ODICEE du {_d(ligne.get('date_export'))}.
 
-Les principaux éléments à retenir sont les suivants (volumes exprimés en MWh cumac, hors opérations sans date réelle de réalisation) :
+Les principaux éléments à retenir sont les suivants (volumes exprimés en MWh cumac, hors opérations sans date réelle de réalisation ; les dossiers « Rénovation globale audit » sont présentés à part) :
 
 • Lots en création : {_n(creation)} lots ({_n(ligne.get('ops_en_creation'))} opérations, {_n(ligne.get('vol_en_creation'))} MWhc cumac), dont {_n(ligne.get('lots_en_constitution'))} en cours de constitution et {_n(ligne.get('lots_demande_coordonnees'))} en demande de coordonnées{_evolution(creation, creation_avant)} ;
 • Lots en cours de contrôle : {_n(ligne.get('lots_en_controle'))} lots ({_n(ligne.get('ops_en_controle'))} opérations, {_n(ligne.get('vol_en_controle'))} MWhc cumac){_evolution(ligne.get('lots_en_controle'), avant.get('lots_en_controle'))}, dont {_n(ligne.get('lots_controle_plus_5_sem'))} lots ({_n(ligne.get('ops_controle_plus_5_sem'))} opérations, {_n(ligne.get('vol_controle_plus_5_sem'))} MWhc cumac) envoyés depuis plus de cinq semaines ;
 • Lots restitués restant à traiter : {_n(ligne.get('lots_restitues'))} lots ({_n(ligne.get('ops_restitues'))} opérations, {_n(ligne.get('vol_restitues'))} MWhc cumac){_evolution(ligne.get('lots_restitues'), avant.get('lots_restitues'))} ;
 • Opérations éligibles : {_n(ligne.get('ops_eligibles'))} ({_n(ligne.get('vol_eligibles'))} MWhc cumac), dont {_n(ligne.get('ops_integrables_delai_2_mois'))} intégrables dans un lot ({_n(ligne.get('vol_integrables_delai_2_mois'))} MWhc cumac ; délai de contrôle supérieur à deux mois) ;
-• Constitution des lots : {_n(ligne.get('nb_lots_a_creer'))} nouveaux lots proposés pour {_n(ligne.get('nb_operations_a_integrer'))} opérations, dont {_n(ligne.get('nb_operations_ajoutees_lots_existants'))} ajoutées à des lots existants.
+{_puce_audit(ligne)}• Constitution des lots : {_n(ligne.get('nb_lots_a_creer'))} nouveaux lots proposés pour {_n(ligne.get('nb_operations_a_integrer'))} opérations, dont {_n(ligne.get('nb_operations_ajoutees_lots_existants'))} ajoutées à des lots existants.
 
 {phrase_flux(ligne)}
 
@@ -151,23 +169,22 @@ def texte_vers_html(texte: str) -> str:
 
 
 # ============================================================================
-# 3. CRÉATION DU BROUILLON DANS GMAIL
+# 3. MAIL PRÊT À OUVRIR DANS OUTLOOK (application de bureau)
 # ============================================================================
 
-class ErreurMessagerie(Exception):
-    """Erreur lisible par l'utilisateur."""
-
-
-def construire_message(expediteur: str, a: list[str], cc: list[str], objet: str, corps: str,
+def construire_message(a: list[str], cc: list[str], objet: str, corps: str,
                        pdf: bytes | None, nom_pdf: str) -> EmailMessage:
+    """
+    Mail « non envoyé » : l'en-tête « X-Unsent: 1 » demande à Outlook de l'ouvrir comme un
+    nouveau message à relire (et non comme un message reçu). Pas d'expéditeur ni de date :
+    Outlook utilise votre compte et la date du jour au moment de l'envoi.
+    """
     msg = EmailMessage()
-    msg["From"] = expediteur
     msg["To"] = ", ".join(a)
     if cc:
         msg["Cc"] = ", ".join(cc)
     msg["Subject"] = objet
-    msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid(domain=expediteur.split("@")[-1])
+    msg["X-Unsent"] = "1"
     msg.set_content(corps)
     msg.add_alternative(texte_vers_html(corps), subtype="html")
     if pdf:
@@ -175,43 +192,24 @@ def construire_message(expediteur: str, a: list[str], cc: list[str], objet: str,
     return msg
 
 
-def _dossier_brouillons(imap) -> str:
-    """Nom du dossier Brouillons (« [Gmail]/Drafts » ou « [Gmail]/Brouillons » selon la langue)."""
-    typ, dossiers = imap.list()
-    if typ == "OK":
-        for brut in dossiers or []:
-            ligne = brut.decode(errors="replace") if isinstance(brut, bytes) else str(brut)
-            if "\\Drafts" in ligne:
-                m = re.match(r'^\((?P<attributs>[^)]*)\) (?P<sep>"[^"]*"|NIL) (?P<nom>.+)$', ligne)
-                if m:
-                    nom = m.group("nom").strip()
-                    return nom if nom.startswith('"') else f'"{nom}"'
-    return '"[Gmail]/Drafts"'
+def fichier_outlook(a: list[str], cc: list[str], objet: str, corps: str,
+                    pdf: bytes | None, nom_pdf: str) -> bytes:
+    """Contenu du fichier .eml à télécharger puis à ouvrir (double-clic) dans Outlook."""
+    return construire_message(a, cc, objet, corps, pdf, nom_pdf).as_bytes(policy=SMTP)
 
 
-def creer_brouillon(adresse: str, mot_de_passe: str, message: EmailMessage) -> str:
-    """Dépose le message dans les Brouillons de la boîte Gmail. Renvoie le nom du dossier."""
-    try:
-        imap = imaplib.IMAP4_SSL(SERVEUR_IMAP, 993, timeout=30)
-    except OSError as e:
-        raise ErreurMessagerie(f"Impossible de joindre Gmail ({e}). Réessayez dans un instant.") from e
-    try:
-        try:
-            imap.login(adresse, mot_de_passe.replace(" ", ""))
-        except imaplib.IMAP4.error as e:
-            raise ErreurMessagerie(
-                f"Gmail refuse la connexion de « {adresse} ». Vérifiez le mot de passe "
-                "d'application (16 lettres, voir README.md) : il faut que la validation en deux "
-                "étapes soit activée sur ce compte et que le mot de passe ait été créé pour ce "
-                f"compte. (Détail : {e})") from e
-        dossier = _dossier_brouillons(imap)
-        typ, retour = imap.append(dossier, r"(\Draft)", imaplib.Time2Internaldate(time.time()),
-                                  message.as_bytes())
-        if typ != "OK":
-            raise ErreurMessagerie(f"Gmail n'a pas accepté le brouillon ({retour}).")
-        return dossier.strip('"')
-    finally:
-        try:
-            imap.logout()
-        except Exception:
-            pass
+LONGUEUR_MAX_LIEN = 1900   # au-delà, certains postes Windows coupent le lien
+
+
+def lien_mailto(a: list[str], cc: list[str], objet: str, corps: str) -> tuple[str, bool]:
+    """
+    Lien « mailto: » qui ouvre un nouveau message dans la messagerie de l'ordinateur
+    (solution de secours : un lien ne peut pas porter de pièce jointe).
+    Renvoie (lien, texte inclus ?) : si le texte est trop long pour un lien, seuls les
+    destinataires et l'objet sont pré-remplis.
+    """
+    base = "mailto:" + ";".join(a) + "?subject=" + quote(objet, safe="")
+    if cc:
+        base += "&cc=" + quote(";".join(cc), safe="@;")
+    complet = base + "&body=" + quote(corps.replace("\n", "\r\n"), safe="")
+    return (complet, True) if len(complet) <= LONGUEUR_MAX_LIEN else (base, False)

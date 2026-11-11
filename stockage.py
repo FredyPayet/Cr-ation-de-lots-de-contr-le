@@ -7,7 +7,8 @@ Deux façons d'enregistrer l'archive et les réglages :
     1. GOOGLE SHEET (recommandé, permanent)
        Activé automatiquement quand les « secrets » Streamlit contiennent un compte de
        service Google et le lien du Google Sheet (voir README.md). Onglets créés :
-         - « Synthèse »             : une ligne par export archivé (création + suivi)
+         - « Archives données exports » : une ligne par export archivé (date, semaine de
+                                      l'année, création des lots, suivi, flux)
          - « Détail bénéficiaires » : opérations intégrées par bénéficiaire et fiche CEE
          - « Lots par étape »       : nombre de lots par étape de contrôle
          - « Bureaux en contrôle »  : lots en contrôle par bureau (≤ / > 5 semaines)
@@ -41,9 +42,42 @@ FICHIER_PARAMETRES = DOSSIER / "parametres.json"
 #    nom interne -> (nom de l'onglet, [(colonne interne, libellé dans le Google Sheet)])
 # ============================================================================
 
+ONGLET_SYNTHESE = "Archives données exports"
+ANCIEN_ONGLET_SYNTHESE = "Synthèse"   # nom utilisé jusqu'à la version 7
+
+# Libellés des indicateurs comptés par catégorie de lignes (voir regles.indicateurs_suivi)
+_COMPTES = [
+    ("lots_en_constitution", "lots en constitution"),
+    ("lots_demande_coordonnees", "lots demande de coordonnées"),
+    ("lots_en_controle", "lots en cours de contrôle"),
+    ("ops_en_controle", "opé en contrôle"),
+    ("lots_controle_plus_5_sem", "lots en contrôle > 5 semaines"),
+    ("ops_controle_plus_5_sem", "opé en contrôle > 5 semaines"),
+    ("lots_restitues", "lots restitués"),
+    ("ops_en_creation", "opé en création"),
+    ("ops_restitues", "opé restituées"),
+    ("ops_eligibles", "OP éligibles"),
+    ("ops_integrables_delai_2_mois", "OP intégrables (délai > 2 mois)"),
+]
+_FLUX = [("creation", "créés"), ("envoi", "envoyés"), ("retour", "restitués")]
+COLONNES_CATEGORIES = (
+    [("ad_" + c, "Avec date réelle : " + l) for c, l in _COMPTES]
+    + [("sd_" + c, "Sans date réelle : " + l) for c, l in _COMPTES]
+    + [("audit_" + c, "Audit réno. globale : " + l) for c, l in _COMPTES]
+    + [("audit_vol_en_creation", "Audit réno. globale : volume MWhc en création"),
+       ("audit_vol_en_controle", "Audit réno. globale : volume MWhc en contrôle"),
+       ("audit_vol_restitues", "Audit réno. globale : volume MWhc restitué"),
+       ("audit_vol_eligibles", "Audit réno. globale : volume MWhc éligible")]
+    + [(f"flux_audit_{u}_{c}", f"Flux audit réno. globale : {n} {l}")
+       for c, l in _FLUX for u, n in (("lots", "lots"), ("ops", "opé. des lots"))]
+    + [(f"flux_periode_audit_{u}_{c}", f"Flux période audit réno. globale : {n} {l}")
+       for c, l in _FLUX for u, n in (("lots", "lots"), ("ops", "opé. des lots"))]
+)
+
 TABLES = {
-    "synthese": ("Synthèse", [
+    "synthese": (ONGLET_SYNTHESE, [
         ("date_export", "Date de l'export"),
+        ("semaine_export", "Semaine de l'année"),
         ("date_archivage", "Archivé le"),
         ("nb_operations_a_integrer", "Opérations à intégrer"),
         ("nb_lots_a_creer", "Lots à créer"),
@@ -89,6 +123,7 @@ TABLES = {
         ("flux_periode_vol_creation", "Flux période : volume MWhc des lots créés"),
         ("flux_periode_vol_envoi", "Flux période : volume MWhc des lots envoyés"),
         ("flux_periode_vol_retour", "Flux période : volume MWhc des lots restitués"),
+        *COLONNES_CATEGORIES,
     ]),
     "detail": ("Détail bénéficiaires", [
         ("date_export", "Date de l'export"),
@@ -106,11 +141,14 @@ TABLES = {
         ("bureau", "Bureau de contrôle"),
         ("lots_delai_ok", "Lots délai respecté (≤ 5 semaines)"),
         ("lots_plus_5_sem", "Lots > 5 semaines"),
+        ("lots_audit", "Lots Rénovation globale audit"),
     ]),
 }
 COLONNES_TEXTE = {"date_export", "date_archivage", "beneficiaire", "fiche", "etape", "bureau",
                   "date_reference_flux", "periode_debut", "periode_fin"}
 ONGLET_GRAPHIQUES = "Graphiques"
+COLONNE_GRAPHIQUES = 11                                         # graphiques à droite des tableaux
+VIOLET_AUDIT = {"red": 0.49, "green": 0.23, "blue": 0.93}       # couleur de la catégorie audit
 ONGLET_PARAMETRES = "Paramètres"
 
 
@@ -144,6 +182,8 @@ def _vers_interne(tableau: pd.DataFrame, table: str) -> pd.DataFrame:
     t = t[[c for c, _ in colonnes]].copy()
     t["date_export"] = t["date_export"].map(_date_iso)
     t = t[t["date_export"] != ""]
+    if "semaine_export" in t.columns:   # semaine ISO (1 à 53), toujours déduite de la date
+        t["semaine_export"] = [pd.Timestamp(d).isocalendar().week for d in t["date_export"]]
     for c, _ in colonnes:
         if c in COLONNES_TEXTE:
             t[c] = t[c].fillna("").astype(str)
@@ -189,15 +229,23 @@ class StockageLocal:
                          ignore_index=True)
         tout.sort_values("date_export").to_csv(DOSSIER / f"archive_{table}.csv", index=False)
 
-    def completer_ligne(self, table: str, date_iso: str, valeurs: dict) -> None:
-        """Remplit les cellules vides de la ligne d'une date (sans modifier les autres)."""
+    def completer_ligne(self, table: str, date_iso: str, valeurs: dict, remplacer: bool = False) -> None:
+        """Remplit les cellules vides de la ligne d'une date (sans modifier les autres).
+        Avec remplacer=True, les valeurs données remplacent aussi celles déjà présentes."""
         tout = self.lire(table)
         masque = tout["date_export"] == date_iso
         for col, v in valeurs.items():
-            vides = masque & (tout[col].isna() | (tout[col].astype(str) == ""))
-            tout.loc[vides, col] = v
+            cible = masque if remplacer else masque & (tout[col].isna() | (tout[col].astype(str) == ""))
+            tout.loc[cible, col] = v
         DOSSIER.mkdir(exist_ok=True)
         tout.to_csv(DOSSIER / f"archive_{table}.csv", index=False)
+
+    def supprimer_date(self, table: str, date_iso: str) -> None:
+        """Retire les lignes d'une date (avant de les réécrire lors d'un recalcul)."""
+        tout = self.lire(table)
+        if not tout.empty:
+            DOSSIER.mkdir(exist_ok=True)
+            tout[tout["date_export"] != date_iso].to_csv(DOSSIER / f"archive_{table}.csv", index=False)
 
     def maj_graphiques(self, archive: dict) -> None:
         pass  # les graphiques sont affichés dans l'application
@@ -260,8 +308,34 @@ class StockageGoogle:
             return ws
 
     # --- archive ------------------------------------------------------------
+    def _reprendre_ancienne_synthese(self) -> None:
+        """
+        Jusqu'à la version 7, la synthèse était dans l'onglet « Synthèse ». Si cet onglet
+        existe et que « Archives données exports » est encore vide, ses lignes y sont
+        recopiées une fois (l'ancien onglet est conservé tel quel).
+        """
+        if getattr(self, "_reprise_faite", False):
+            return
+        self._reprise_faite = True
+        try:
+            anciennes = self.classeur.worksheet(ANCIEN_ONGLET_SYNTHESE).get_all_values(
+                value_render_option="UNFORMATTED_VALUE")
+        except self._gspread.exceptions.WorksheetNotFound:
+            return
+        if len(anciennes) < 2:
+            return
+        try:
+            deja = self.classeur.worksheet(ONGLET_SYNTHESE).get_all_values()
+        except self._gspread.exceptions.WorksheetNotFound:
+            deja = []
+        if len(deja) < 2:
+            self.ajouter("synthese", _vers_interne(
+                pd.DataFrame(anciennes[1:], columns=anciennes[0]), "synthese"))
+
     def lire(self, table: str) -> pd.DataFrame:
         titre, _ = TABLES[table]
+        if table == "synthese":
+            self._reprendre_ancienne_synthese()
         try:
             # Valeurs brutes (sans mise en forme régionale : 1008 et non « 1 008 »)
             valeurs = self.classeur.worksheet(titre).get_all_values(
@@ -286,9 +360,17 @@ class StockageGoogle:
         libelles = [l for _, l in colonnes]
         ws = self._onglet(titre, libelles)
         entete = ws.row_values(1)
-        if not entete:
+        if not entete:   # onglet existant mais vide : en-tête créé et mis en forme
             entete = libelles
+            if len(entete) > ws.col_count:
+                ws.add_cols(len(entete) - ws.col_count)
             ws.update(values=[entete], range_name="A1")
+            try:
+                ws.format("1:1", {"textFormat": {"bold": True}, "wrapStrategy": "WRAP",
+                                  "backgroundColor": {"red": 0.87, "green": 0.92, "blue": 0.97}})
+                ws.freeze(rows=1, cols=2 if table == "synthese" else 1)
+            except Exception:
+                pass  # la mise en forme n'est pas indispensable
         manquantes = [l for l in libelles if l not in entete]
         if manquantes:  # nouvelles colonnes ajoutées à droite, sans toucher aux anciennes
             entete = entete + manquantes
@@ -297,8 +379,9 @@ class StockageGoogle:
             ws.update(values=[entete], range_name="A1")
         return ws, entete
 
-    def completer_ligne(self, table: str, date_iso: str, valeurs: dict) -> None:
-        """Remplit les cellules vides de la ligne d'une date (sans modifier les autres)."""
+    def completer_ligne(self, table: str, date_iso: str, valeurs: dict, remplacer: bool = False) -> None:
+        """Remplit les cellules vides de la ligne d'une date (sans modifier les autres).
+        Avec remplacer=True, les valeurs données remplacent aussi celles déjà présentes."""
         ws, entete = self._onglet_et_entete(table)
         libelles = dict(TABLES[table][1])
         lignes = ws.get_all_values()
@@ -308,11 +391,29 @@ class StockageGoogle:
             if col_date < len(ligne) and _date_iso(ligne[col_date]) == date_iso:
                 for col, v in valeurs.items():
                     j = entete.index(libelles[col])
-                    if j >= len(ligne) or ligne[j] == "":
+                    if remplacer or j >= len(ligne) or ligne[j] == "":
                         mises_a_jour.append({"range": self._gspread.utils.rowcol_to_a1(i, j + 1),
                                              "values": [[_cellule(v)]]})
         if mises_a_jour:
             ws.batch_update(mises_a_jour, value_input_option="RAW")
+
+    def supprimer_date(self, table: str, date_iso: str) -> None:
+        """Retire les lignes d'une date (avant de les réécrire lors d'un recalcul)."""
+        try:
+            ws = self.classeur.worksheet(TABLES[table][0])
+        except self._gspread.exceptions.WorksheetNotFound:
+            return
+        lignes = ws.get_all_values()
+        if not lignes:
+            return
+        libelle = dict(TABLES[table][1])["date_export"]
+        if libelle not in lignes[0]:
+            return
+        col = lignes[0].index(libelle)
+        numeros = [i for i, l in enumerate(lignes[1:], start=2)
+                   if col < len(l) and _date_iso(l[col]) == date_iso]
+        for i in reversed(numeros):   # du bas vers le haut : les numéros restent justes
+            ws.delete_rows(i)
 
     # --- graphiques ---------------------------------------------------------
     def maj_graphiques(self, archive: dict) -> None:
@@ -339,15 +440,16 @@ class StockageGoogle:
 
         date_txt = pd.Timestamp(derniere).strftime("%d/%m/%Y")
         lignes_e = [[e, _cellule(n)] for e, n in zip(etapes["etape"], etapes["nb_lots"])]
-        lignes_b = [[b, _cellule(o), _cellule(r)] for b, o, r in
-                    zip(bureaux["bureau"], bureaux["lots_delai_ok"], bureaux["lots_plus_5_sem"])]
+        lignes_b = [[b, _cellule(o), _cellule(r), 0 if pd.isna(a) else _cellule(a)] for b, o, r, a in
+                    zip(bureaux["bureau"], bureaux["lots_delai_ok"], bureaux["lots_plus_5_sem"],
+                        bureaux["lots_audit"])]
         ws.update(values=[[f"Situation de l'export du {date_txt} (dernier export archivé)"]],
                   range_name="A1")
         ws.update(values=[["Étape de contrôle", "Nb lots"]] + lignes_e, range_name="A3")
         ws.update(values=[["Bureau de contrôle", "Délai respecté (≤ 5 semaines)",
-                           "> 5 semaines"]] + lignes_b, range_name="D3")
+                           "> 5 semaines", "Rénovation globale audit"]] + lignes_b, range_name="D3")
         ws.format("A1", {"textFormat": {"bold": True, "fontSize": 13}})
-        ws.format("A3:F3", {"textFormat": {"bold": True}})
+        ws.format("A3:G3", {"textFormat": {"bold": True}})
 
         sid = ws.id
 
@@ -369,7 +471,7 @@ class StockageGoogle:
                          "pieChart": {"legendPosition": "RIGHT_LEGEND",
                                       "domain": plage(3, 3 + n, 0, 1),
                                       "series": plage(3, 3 + n, 1, 2)}},
-                "position": position(0, 7)}}})
+                "position": position(0, COLONNE_GRAPHIQUES)}}})
         if lignes_b:
             m = len(lignes_b)
             requetes.append({"addChart": {"chart": {
@@ -385,26 +487,34 @@ class StockageGoogle:
                                   "colorStyle": {"rgbColor": {"red": 0.12, "green": 0.37, "blue": 0.68}}},
                                  {"series": plage(2, 3 + m, 5, 6), "targetAxis": "LEFT_AXIS",
                                   "colorStyle": {"rgbColor": {"red": 0.85, "green": 0.33, "blue": 0.10}}},
+                                 {"series": plage(2, 3 + m, 6, 7), "targetAxis": "LEFT_AXIS",
+                                  "colorStyle": {"rgbColor": VIOLET_AUDIT}},
                              ]}},
-                "position": position(21, 7)}}})
+                "position": position(21, COLONNE_GRAPHIQUES)}}})
 
         # Flux d'activité : un jour de référence par export archivé (30 derniers)
         flux = synthese[synthese["flux_lots_creation"].notna()].sort_values("date_export").tail(30)
         if not flux.empty:
             debut = 3 + max(len(lignes_e), len(lignes_b)) + 3   # ligne (index à 0) du tableau
             entete_flux = ["Période", "Lots créés", "Opé. des lots créés", "Lots envoyés",
-                           "Opé. des lots envoyés", "Lots restitués", "Opé. des lots restitués"]
+                           "Opé. des lots envoyés", "Lots restitués", "Opé. des lots restitués",
+                           "Audit réno. globale : lots créés", "Audit réno. globale : lots envoyés",
+                           "Audit réno. globale : lots restitués"]
             cles_flux = ("lots_creation", "ops_creation", "lots_envoi", "ops_envoi",
-                         "lots_retour", "ops_retour")
+                         "lots_retour", "ops_retour", "audit_lots_creation", "audit_lots_envoi",
+                         "audit_lots_retour")
+
+            def cell0(v):   # indicateur absent (ancienne archive) -> 0 pour le graphique
+                return 0 if v is None or pd.isna(v) else _cellule(v)
 
             def ligne_flux(r):
                 # Entre deux exports (bornes incluses) si connu, sinon jour ouvré précédent
                 if r.get("periode_debut") and not pd.isna(r.get("flux_periode_lots_creation")):
                     libelle = (f"{pd.Timestamp(r['periode_debut']):%d/%m} → "
                                f"{pd.Timestamp(r['periode_fin']):%d/%m/%Y}")
-                    return [libelle] + [_cellule(r[f"flux_periode_{c}"]) for c in cles_flux]
+                    return [libelle] + [cell0(r[f"flux_periode_{c}"]) for c in cles_flux]
                 jour_f = r["date_reference_flux"] or r["date_export"]
-                return [f"le {pd.Timestamp(jour_f):%d/%m/%Y}"] + [_cellule(r[f"flux_{c}"]) for c in cles_flux]
+                return [f"le {pd.Timestamp(jour_f):%d/%m/%Y}"] + [cell0(r[f"flux_{c}"]) for c in cles_flux]
 
             lignes_f = [ligne_flux(r) for r in flux.to_dict("records")]
             ws.update(values=[["Flux d'activité entre deux exports archivés (dates incluses) — "
@@ -412,9 +522,10 @@ class StockageGoogle:
                       range_name=f"A{debut}")
             ws.update(values=[entete_flux] + lignes_f, range_name=f"A{debut + 1}")
             ws.format(f"A{debut}", {"textFormat": {"bold": True, "fontSize": 12}})
-            ws.format(f"A{debut + 1}:G{debut + 1}", {"textFormat": {"bold": True}})
+            ws.format(f"A{debut + 1}:J{debut + 1}", {"textFormat": {"bold": True}})
             l0, l1 = debut, debut + 1 + len(lignes_f)   # en-tête (index à 0) -> dernière ligne
-            couleurs = [(0.12, 0.37, 0.68), (0.88, 0.54, 0.0), (0.18, 0.49, 0.20)]
+            couleurs = [(0.12, 0.37, 0.68), (0.88, 0.54, 0.0), (0.18, 0.49, 0.20),
+                        (0.49, 0.23, 0.93), (0.65, 0.48, 0.96), (0.80, 0.70, 0.98)]   # 3 dernières : audit
             requetes.append({"addChart": {"chart": {
                 "spec": {"title": "Flux d'activité : lots créés, envoyés et restitués entre deux exports",
                          "basicChart": {
@@ -426,8 +537,8 @@ class StockageGoogle:
                              "series": [
                                  {"series": plage(l0, l1, c, c + 1), "targetAxis": "LEFT_AXIS",
                                   "colorStyle": {"rgbColor": {"red": r, "green": g, "blue": b}}}
-                                 for c, (r, g, b) in zip((1, 3, 5), couleurs)]}},
-                "position": position(42, 7)}}})
+                                 for c, (r, g, b) in zip((1, 3, 5, 7, 8, 9), couleurs)]}},
+                "position": position(42, COLONNE_GRAPHIQUES)}}})
         if requetes:
             self.classeur.batch_update({"requests": requetes})
 
@@ -541,14 +652,18 @@ INDICATEURS_FLUX = ["flux_lots_creation", "flux_ops_creation", "flux_lots_envoi"
 INDICATEURS_VOLUME = ["vol_en_creation", "vol_en_constitution", "vol_demande_coordonnees",
                       "vol_en_controle", "vol_controle_plus_5_sem", "vol_restitues",
                       "vol_eligibles", "vol_integrables_delai_2_mois"]
+# Version 8 : indicateurs par catégorie de lignes (avec / sans date réelle, audit)
+INDICATEURS_CATEGORIES = [c for c, _ in COLONNES_CATEGORIES if not c.startswith("flux_periode_")]
 INDICATEURS_SUIVI = ["lots_en_constitution", "lots_demande_coordonnees", "lots_en_controle",
                      "ops_en_controle", "lots_controle_plus_5_sem", "ops_controle_plus_5_sem",
                      "lots_restitues", "ops_eligibles", "ops_integrables_delai_2_mois",
-                     "ops_en_creation", "ops_restitues", *INDICATEURS_VOLUME, *INDICATEURS_FLUX]
+                     "ops_en_creation", "ops_restitues", *INDICATEURS_VOLUME, *INDICATEURS_FLUX,
+                     *INDICATEURS_CATEGORIES]
 INDICATEURS_PERIODE = ["periode_debut", "periode_fin", "flux_periode_lots_creation",
                        "flux_periode_ops_creation", "flux_periode_lots_envoi", "flux_periode_ops_envoi",
                        "flux_periode_lots_retour", "flux_periode_ops_retour",
-                       "flux_periode_vol_creation", "flux_periode_vol_envoi", "flux_periode_vol_retour"]
+                       "flux_periode_vol_creation", "flux_periode_vol_envoi", "flux_periode_vol_retour",
+                       *[c for c, _ in COLONNES_CATEGORIES if c.startswith("flux_periode_")]]
 INDICATEURS_A_COMPLETER = INDICATEURS_SUIVI + ["date_reference_flux"] + INDICATEURS_PERIODE
 
 
@@ -574,21 +689,46 @@ def archive_incomplete(date_iso: str) -> bool:
     return bool(manque_indicateurs or manque_graphiques)
 
 
+def sans_categories(date_iso: str) -> bool:
+    """Vrai si l'export a été archivé avant la version 8 (pas de catégorie « Rénovation
+    globale audit ») : ses indicateurs de suivi comptaient alors toutes les lignes."""
+    synthese = charger_archive()["synthese"]
+    ligne = synthese[synthese["date_export"] == date_iso]
+    return (not ligne.empty) and bool(ligne["audit_lots_en_controle"].isna().all())
+
+
+def date_archivage(date_iso: str):
+    """Jour où l'export a été archivé (sert à recalculer le délai de 5 semaines à l'identique)."""
+    synthese = charger_archive()["synthese"]
+    ligne = synthese[synthese["date_export"] == date_iso]
+    if ligne.empty:
+        return None
+    d = pd.to_datetime(str(ligne["date_archivage"].iloc[0])[:10], format="%d/%m/%Y", errors="coerce")
+    return None if pd.isna(d) else d.date()
+
+
 def completer_archive(archive_jour: dict) -> tuple[bool, str | None]:
     """
     Complète un export déjà archivé avec les indicateurs de suivi et les données des
-    graphiques, SANS modifier les chiffres déjà enregistrés (création des lots, détail).
+    graphiques, SANS modifier les chiffres de création des lots ni le détail.
+    Si l'export a été archivé avant la catégorie « Rénovation globale audit », les
+    indicateurs de suivi et les données des graphiques sont RECALCULÉS (la catégorie
+    est retirée des autres chiffres).
     Renvoie (complété ?, avertissement éventuel).
     """
     date_iso = archive_jour["synthese"]["date_export"]
     archive = charger_archive(forcer=True)
     if date_iso not in set(archive["synthese"]["date_export"]):
         return False, None
+    recalcul = sans_categories(date_iso)
     valeurs = {k: archive_jour["synthese"][k] for k in INDICATEURS_A_COMPLETER
                if k in archive_jour["synthese"]}
-    _stockage.completer_ligne("synthese", date_iso, valeurs)
+    _stockage.completer_ligne("synthese", date_iso, valeurs, remplacer=recalcul)
     for t in ("etapes", "bureaux"):
-        if (archive[t]["date_export"] == date_iso).sum() == 0:
+        if recalcul:
+            _stockage.supprimer_date(t, date_iso)
+            _stockage.ajouter(t, archive_jour[t])
+        elif (archive[t]["date_export"] == date_iso).sum() == 0:
             _stockage.ajouter(t, archive_jour[t])
     _cache.pop("archive", None)
     return True, _maj_graphiques()
@@ -635,7 +775,7 @@ def importer_archive(fichier) -> tuple[int, int]:
             tables[t] = _vers_interne(contenu, t)
     if "synthese" not in tables:
         raise ValueError("Ce fichier ne ressemble pas à une archive : il doit contenir un "
-                         "onglet « Synthèse ».")
+                         "onglet « Archives données exports » (ou « Synthèse »).")
     connues = set(charger_archive(forcer=True)["synthese"]["date_export"])
     nouvelles = [d for d in tables["synthese"]["date_export"].unique() if d not in connues]
     for t, contenu in tables.items():

@@ -76,6 +76,13 @@ TYPES_LOT = [
 ]
 FICHE_MURS = "BAR-EN-102"
 
+# Catégorie suivie à part : fiches « rénovation globale » SANS date réelle de réalisation
+# (l'audit est fait, les travaux ne sont pas encore réalisés).
+FICHES_AUDIT = ["BAR-TH-145", "BAR-TH-177"]
+CATEGORIE_AUDIT = "Rénovation globale audit"
+# Préfixes des indicateurs par catégorie de lignes (voir indicateurs_suivi)
+PREFIXE_AVEC_DRR, PREFIXE_SANS_DRR, PREFIXE_AUDIT = "ad_", "sd_", "audit_"
+
 # Libellés des motifs d'exclusion (affichés à l'utilisateur)
 MOTIF_ABANDON = "Opération abandonnée"
 MOTIF_SANS_DFT = "Date réelle de réalisation manquante"
@@ -853,94 +860,141 @@ def repartition_bureaux(res: dict, pourcentages: dict) -> pd.DataFrame:
     return t
 
 
+def lignes_audit(df: pd.DataFrame) -> pd.Series:
+    """Vrai pour les lignes « Rénovation globale audit » : fiche BAR-TH-145 ou BAR-TH-177
+    ET date réelle de réalisation vide."""
+    fiches = {normaliser(f) for f in FICHES_AUDIT}
+    return df["fiche"].map(normaliser).isin(fiches) & df["date_realisation"].isna()
+
+
+# Indicateurs comptés pour chaque catégorie de lignes (lots = lots uniques, ops = lignes)
+COMPTES_SUIVI = ["lots_en_constitution", "lots_demande_coordonnees", "lots_en_controle",
+                 "ops_en_controle", "lots_controle_plus_5_sem", "ops_controle_plus_5_sem",
+                 "lots_restitues", "ops_en_creation", "ops_restitues", "ops_eligibles",
+                 "ops_integrables_delai_2_mois"]
+
+
 def indicateurs_suivi(df: pd.DataFrame, date_jour: date) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     """
-    Indicateurs de suivi du contrôle, calculés sur tout l'export :
+    Indicateurs de suivi du contrôle, calculés sur tout l'export.
+
+    Les lignes sont réparties en trois catégories :
+      - « Rénovation globale audit » : fiche BAR-TH-145 / BAR-TH-177 sans date réelle de
+        réalisation. ISOLÉE : elle n'est comptée dans aucun autre indicateur.
+        Ses indicateurs portent le préfixe « audit_ ».
+      - avec date réelle de réalisation (préfixe « ad_ ») ;
+      - sans date réelle de réalisation, hors audit (préfixe « sd_ »).
+    Les indicateurs SANS préfixe sont le total hors audit (avec + sans date réelle) :
       1. lots_en_constitution        : lots uniques (V) à l'étape « En cours de constitution »
       2. lots_demande_coordonnees    : lots uniques à l'étape « En demande de coordonnées »
       3. lots_en_controle            : lots uniques à l'étape « En cours de contrôle »
       4. ops_en_controle             : opérations (N° dossier renseigné) « En cours de contrôle »
       5. lots_controle_plus_5_sem    : dont lots envoyés depuis plus de 5 semaines
-                                       (« Date d'envoi du lot de contrôle » -> aujourd'hui)
       6. ops_controle_plus_5_sem     : dont opérations de ces lots
       7. lots_restitues              : lots uniques à l'étape « Lot restitué »
       8. ops_eligibles               : opérations à l'étape « Eligible »
       9. ops_integrables_delai_2_mois: opérations « Eligible » dont la date de réalisation
                                        (ou à défaut la date prévisionnelle) + 12 mois
                                        dépasse aujourd'hui + 2 mois
+    Un lot qui contient des lignes de plusieurs catégories est compté une fois dans chacune.
+
     Renvoie aussi deux tableaux pour les graphiques :
-      - etapes  : nombre de lots par étape de contrôle (hors « Eligible » et vide)
-      - bureaux : lots « En cours de contrôle » par bureau, délai respecté / > 5 semaines
+      - etapes  : nombre de lots par étape (hors « Eligible », vide et audit)
+                  + une ligne « Rénovation globale audit »
+      - bureaux : lots « En cours de contrôle » par bureau : délai respecté / > 5 semaines
+                  (hors audit) et lots « Rénovation globale audit »
     Un lot sans date d'envoi est compté dans « délai respecté ».
     """
     aujourdhui = pd.Timestamp(date_jour)
     etape = df["etape"].map(normaliser)
     a_un_lot = (df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))
+    a_un_dossier = df["dossier"] != ""
+    est = lambda nom: etape == normaliser(nom)  # noqa: E731
+    audit = lignes_audit(df)
+    avec_drr = df["date_realisation"].notna()
 
-    def nb_lots(nom_etape: str) -> int:
-        return int(df.loc[a_un_lot & (etape == normaliser(nom_etape)), "lot"].nunique())
-
-    # Lots en cours de contrôle et retard (> 5 semaines depuis l'envoi)
-    controle = df[etape == normaliser(ETAPE_CONTROLE)]
-    controle_lots = controle[a_un_lot.loc[controle.index]]
+    # Retard : lot en contrôle envoyé depuis plus de 5 semaines (date d'envoi la plus ancienne)
+    controle_lots = df[est(ETAPE_CONTROLE) & a_un_lot]
     envoi_par_lot = controle_lots.groupby("lot")["date_envoi"].min()
     en_retard = (aujourdhui - envoi_par_lot) > pd.Timedelta(weeks=SEMAINES_RETARD)
     lots_retard = set(en_retard[en_retard].index)
+    dans_lot_retard = df["lot"].isin(lots_retard)
 
-    # Opérations éligibles et intégrables (délai > 2 mois)
-    eligibles = df[etape == normaliser(ETAPE_ELIGIBLE)]
-    reference = eligibles["date_realisation"].fillna(eligibles["date_prev_realisation"])
-    limite = reference + pd.DateOffset(months=12)
-    integrables = limite > aujourdhui + pd.DateOffset(months=DELAI_MIN_MOIS)
+    # Opérations éligibles intégrables (délai > 2 mois)
+    reference = df["date_realisation"].fillna(df["date_prev_realisation"])
+    integrable = est(ETAPE_ELIGIBLE) & (
+        reference + pd.DateOffset(months=12) > aujourdhui + pd.DateOffset(months=DELAI_MIN_MOIS))
 
-    indicateurs = {
-        "lots_en_constitution": nb_lots(ETAPE_CONSTITUTION),
-        "lots_demande_coordonnees": nb_lots(ETAPE_COORDONNEES),
-        "lots_en_controle": nb_lots(ETAPE_CONTROLE),
-        "ops_en_controle": int((controle["dossier"] != "").sum()),
-        "lots_controle_plus_5_sem": len(lots_retard),
-        "ops_controle_plus_5_sem": int(controle["lot"].isin(lots_retard).sum()),
-        "lots_restitues": nb_lots(ETAPE_RESTITUE),
-        # Opérations des stocks du schéma de flux (lignes à ces étapes)
-        "ops_en_creation": int(((etape.isin([normaliser(ETAPE_CONSTITUTION), normaliser(ETAPE_COORDONNEES)]))
-                                & (df["dossier"] != "")).sum()),
-        "ops_restitues": int(((etape == normaliser(ETAPE_RESTITUE)) & (df["dossier"] != "")).sum()),
-        "ops_eligibles": int((eligibles["dossier"] != "").sum()),
-        "ops_integrables_delai_2_mois": int(integrables.sum()),
-    }
+    def compter(categorie: pd.Series) -> dict:
+        """Les 11 indicateurs pour une catégorie de lignes (masque)."""
+        def nb_lots(masque) -> int:
+            return int(df.loc[categorie & a_un_lot & masque, "lot"].nunique())
+
+        def nb_ops(masque) -> int:
+            return int((categorie & a_un_dossier & masque).sum())
+
+        return {
+            "lots_en_constitution": nb_lots(est(ETAPE_CONSTITUTION)),
+            "lots_demande_coordonnees": nb_lots(est(ETAPE_COORDONNEES)),
+            "lots_en_controle": nb_lots(est(ETAPE_CONTROLE)),
+            "ops_en_controle": nb_ops(est(ETAPE_CONTROLE)),
+            "lots_controle_plus_5_sem": nb_lots(est(ETAPE_CONTROLE) & dans_lot_retard),
+            "ops_controle_plus_5_sem": int((categorie & est(ETAPE_CONTROLE) & dans_lot_retard).sum()),
+            "lots_restitues": nb_lots(est(ETAPE_RESTITUE)),
+            "ops_en_creation": nb_ops(est(ETAPE_CONSTITUTION) | est(ETAPE_COORDONNEES)),
+            "ops_restitues": nb_ops(est(ETAPE_RESTITUE)),
+            "ops_eligibles": nb_ops(est(ETAPE_ELIGIBLE)),
+            "ops_integrables_delai_2_mois": int((categorie & integrable).sum()),
+        }
+
+    indicateurs = compter(~audit)                                   # total hors audit
+    for prefixe, categorie in ((PREFIXE_AVEC_DRR, avec_drr),
+                               (PREFIXE_SANS_DRR, ~avec_drr & ~audit),
+                               (PREFIXE_AUDIT, audit)):
+        indicateurs.update({prefixe + k: v for k, v in compter(categorie).items()})
 
     # Volumes CUMAC (MWhc, colonne J) : uniquement les lignes AVEC une date réelle de réalisation
-    avec_drr = df["date_realisation"].notna()
-
     def volume(masque) -> int:
-        return int(round(float(df.loc[masque & avec_drr, "volume"].sum())))
+        return int(round(float(df.loc[masque, "volume"].sum())))
 
-    est = lambda nom: etape == normaliser(nom)  # noqa: E731
     indicateurs.update({
-        "vol_en_creation": volume(est(ETAPE_CONSTITUTION) | est(ETAPE_COORDONNEES)),
-        "vol_en_constitution": volume(est(ETAPE_CONSTITUTION)),
-        "vol_demande_coordonnees": volume(est(ETAPE_COORDONNEES)),
-        "vol_en_controle": volume(est(ETAPE_CONTROLE)),
-        "vol_controle_plus_5_sem": volume(est(ETAPE_CONTROLE) & df["lot"].isin(lots_retard)),
-        "vol_restitues": volume(est(ETAPE_RESTITUE)),
-        "vol_eligibles": volume(est(ETAPE_ELIGIBLE)),
-        "vol_integrables_delai_2_mois": volume(
-            df.index.isin(eligibles.index[integrables.values])),
+        "vol_en_creation": volume(avec_drr & (est(ETAPE_CONSTITUTION) | est(ETAPE_COORDONNEES))),
+        "vol_en_constitution": volume(avec_drr & est(ETAPE_CONSTITUTION)),
+        "vol_demande_coordonnees": volume(avec_drr & est(ETAPE_COORDONNEES)),
+        "vol_en_controle": volume(avec_drr & est(ETAPE_CONTROLE)),
+        "vol_controle_plus_5_sem": volume(avec_drr & est(ETAPE_CONTROLE) & dans_lot_retard),
+        "vol_restitues": volume(avec_drr & est(ETAPE_RESTITUE)),
+        "vol_eligibles": volume(avec_drr & est(ETAPE_ELIGIBLE)),
+        "vol_integrables_delai_2_mois": volume(avec_drr & integrable),
+        # Catégorie audit : volume indiqué à part, à titre d'information (ces lignes n'ont
+        # pas de date réelle de réalisation : il n'entre dans aucun autre volume)
+        "audit_vol_en_creation": volume(audit & (est(ETAPE_CONSTITUTION) | est(ETAPE_COORDONNEES))),
+        "audit_vol_en_controle": volume(audit & est(ETAPE_CONTROLE)),
+        "audit_vol_restitues": volume(audit & est(ETAPE_RESTITUE)),
+        "audit_vol_eligibles": volume(audit & est(ETAPE_ELIGIBLE)),
     })
 
-    # Graphique 1 : lots par étape de contrôle (hors « Eligible » et vide)
-    hors = df[a_un_lot & ~etape.isin(["", normaliser(ETAPE_ELIGIBLE)])]
-    etapes = (hors.groupby("etape")["lot"].nunique().rename("nb_lots")
+    # Graphique 1 : lots par étape de contrôle (hors « Eligible », vide et audit) + audit
+    dans_un_lot = a_un_lot & ~etape.isin(["", normaliser(ETAPE_ELIGIBLE)])
+    etapes = (df[dans_un_lot & ~audit].groupby("etape")["lot"].nunique().rename("nb_lots")
               .sort_values(ascending=False).reset_index())
+    etapes.loc[len(etapes)] = [CATEGORIE_AUDIT, int(df.loc[dans_un_lot & audit, "lot"].nunique())]
 
-    # Graphique 2 : lots en cours de contrôle par bureau, délai respecté / > 5 semaines
-    par_lot = controle_lots.drop_duplicates("lot")[["lot", "bureau"]].copy()
-    par_lot["bureau"] = par_lot["bureau"].replace("", "(non renseigné)")
+    # Graphique 2 : lots en cours de contrôle par bureau
+    def lots_par_bureau(categorie) -> pd.DataFrame:
+        t = df[est(ETAPE_CONTROLE) & a_un_lot & categorie].drop_duplicates("lot")[["lot", "bureau"]].copy()
+        t["bureau"] = t["bureau"].replace("", "(non renseigné)")
+        return t
+
+    par_lot = lots_par_bureau(~audit)
     par_lot["retard"] = par_lot["lot"].isin(lots_retard)
-    bureaux = pd.DataFrame({"bureau": sorted(set(liste_bureaux(df)) | set(par_lot["bureau"]))})
+    par_lot_audit = lots_par_bureau(audit)
+    bureaux = pd.DataFrame({"bureau": sorted(set(liste_bureaux(df)) | set(par_lot["bureau"])
+                                             | set(par_lot_audit["bureau"]))})
     comptes = par_lot.groupby(["bureau", "retard"]).size().unstack(fill_value=0)
     bureaux["lots_delai_ok"] = bureaux["bureau"].map(comptes.get(False, pd.Series(dtype=int))).fillna(0).astype(int)
     bureaux["lots_plus_5_sem"] = bureaux["bureau"].map(comptes.get(True, pd.Series(dtype=int))).fillna(0).astype(int)
+    bureaux["lots_audit"] = bureaux["bureau"].map(par_lot_audit.groupby("bureau").size()).fillna(0).astype(int)
     return indicateurs, etapes, bureaux
 
 
@@ -979,14 +1033,18 @@ def jour_ouvre_precedent(d: date) -> date:
     return j
 
 
-def lots_et_dates(df: pd.DataFrame) -> pd.DataFrame:
+def lots_et_dates(df: pd.DataFrame, lignes: pd.Series | None = None) -> pd.DataFrame:
     """
     Une ligne par lot unique (colonne V) : date de création (W), date d'envoi (Z),
     date de retour (AA), nombre d'opérations (nombre de lignes du lot) et volume CUMAC
     (MWhc, colonne J) des lignes qui ont une date réelle de réalisation.
     Si un lot a plusieurs dates différentes, la plus ancienne est retenue.
+    `lignes` : masque facultatif pour ne garder qu'une catégorie de lignes.
     """
-    avec_lot = df[(df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))]
+    avec_lot = (df["lot"] != "") & (df["lot"].map(normaliser) != normaliser(LOT_VIDE))
+    if lignes is not None:
+        avec_lot &= lignes
+    avec_lot = df[avec_lot]
     avec_lot = avec_lot.assign(volume_retenu=avec_lot["volume"].where(avec_lot["date_realisation"].notna(), 0.0))
     return avec_lot.groupby("lot").agg(
         date_creation=("date_creation_lot", "min"),
@@ -1002,20 +1060,35 @@ ETAPES_FLUX = [("creation", "date_creation", "Lots créés"),
                ("retour", "date_retour", "Lots restitués")]
 
 
+def _lots_par_categorie(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(lots hors audit, lots « Rénovation globale audit ») pour les flux."""
+    audit = lignes_audit(df)
+    return lots_et_dates(df, ~audit), lots_et_dates(df, audit)
+
+
+def _flux_entre(df: pd.DataFrame, d0: pd.Timestamp, d1: pd.Timestamp, prefixe: str) -> dict:
+    """Lots, opérations et volume dont la date est entre d0 et d1 inclus (hors audit),
+    et lots / opérations de la catégorie audit (clés « …audit_lots_… », « …audit_ops_… »)."""
+    lots, lots_audit = _lots_par_categorie(df)
+    resultat = {}
+    for cle, col, _ in ETAPES_FLUX:
+        choisis = lots[lots[col].between(d0, d1, inclusive="both")]
+        resultat[f"{prefixe}lots_{cle}"] = int(len(choisis))
+        resultat[f"{prefixe}ops_{cle}"] = int(choisis["nb_ops"].sum())
+        resultat[f"{prefixe}vol_{cle}"] = int(round(float(choisis["volume"].sum())))
+        choisis = lots_audit[lots_audit[col].between(d0, d1, inclusive="both")]
+        resultat[f"{prefixe}audit_lots_{cle}"] = int(len(choisis))
+        resultat[f"{prefixe}audit_ops_{cle}"] = int(choisis["nb_ops"].sum())
+    return resultat
+
+
 def indicateurs_flux(df: pd.DataFrame, date_export: date) -> dict:
     """
     Flux du jour ouvré précédant la date de l'export :
     lots (et opérations) créés, envoyés et restitués ce jour-là.
     """
     jour = pd.Timestamp(jour_ouvre_precedent(date_export))
-    lots = lots_et_dates(df)
-    resultat = {"date_reference_flux": jour.date().isoformat()}
-    for cle, col, _ in ETAPES_FLUX:
-        du_jour = lots[lots[col] == jour]
-        resultat[f"flux_lots_{cle}"] = int(len(du_jour))
-        resultat[f"flux_ops_{cle}"] = int(du_jour["nb_ops"].sum())
-        resultat[f"flux_vol_{cle}"] = int(round(float(du_jour["volume"].sum())))
-    return resultat
+    return {"date_reference_flux": jour.date().isoformat(), **_flux_entre(df, jour, jour, "flux_")}
 
 
 def indicateurs_flux_periode(df: pd.DataFrame, debut: date, fin: date) -> dict:
@@ -1024,16 +1097,25 @@ def indicateurs_flux_periode(df: pd.DataFrame, debut: date, fin: date) -> dict:
     de retour est comprise entre `debut` (date de l'export précédent) et `fin` (date de
     l'export actuel), BORNES INCLUSES (>= debut et <= fin).
     """
-    d0, d1 = pd.Timestamp(debut), pd.Timestamp(fin)
-    lots = lots_et_dates(df)
-    resultat = {"periode_debut": pd.Timestamp(debut).date().isoformat(),
-                "periode_fin": pd.Timestamp(fin).date().isoformat()}
+    return {"periode_debut": pd.Timestamp(debut).date().isoformat(),
+            "periode_fin": pd.Timestamp(fin).date().isoformat(),
+            **_flux_entre(df, pd.Timestamp(debut), pd.Timestamp(fin), "flux_periode_")}
+
+
+def _flux_des_jours(df: pd.DataFrame, jours) -> pd.DataFrame:
+    """Flux pour chaque jour de la liste : colonnes lots_/ops_/vol_ (hors audit) et
+    audit_lots_/audit_ops_ (catégorie « Rénovation globale audit »)."""
+    lots, lots_audit = _lots_par_categorie(df)
+    t = pd.DataFrame({"jour": jours})
     for cle, col, _ in ETAPES_FLUX:
-        dans_periode = lots[lots[col].between(d0, d1, inclusive="both")]
-        resultat[f"flux_periode_lots_{cle}"] = int(len(dans_periode))
-        resultat[f"flux_periode_ops_{cle}"] = int(dans_periode["nb_ops"].sum())
-        resultat[f"flux_periode_vol_{cle}"] = int(round(float(dans_periode["volume"].sum())))
-    return resultat
+        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"), v=("volume", "sum"))
+        t[f"lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
+        t[f"ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
+        t[f"vol_{cle}"] = t["jour"].map(par_jour["v"]).fillna(0).round().astype(int)
+        par_jour = lots_audit.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"))
+        t[f"audit_lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
+        t[f"audit_ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
+    return t
 
 
 def flux_jours_periode(df: pd.DataFrame, debut: date, fin: date) -> pd.DataFrame:
@@ -1042,14 +1124,7 @@ def flux_jours_periode(df: pd.DataFrame, debut: date, fin: date) -> pd.DataFrame
     affichés ; un samedi, dimanche ou jour férié n'apparaît que s'il a eu de l'activité.
     Les totaux sont donc égaux à ceux de indicateurs_flux_periode().
     """
-    lots = lots_et_dates(df)
-    jours = pd.date_range(pd.Timestamp(debut), pd.Timestamp(fin), freq="D")
-    t = pd.DataFrame({"jour": jours})
-    for cle, col, _ in ETAPES_FLUX:
-        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"), v=("volume", "sum"))
-        t[f"lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
-        t[f"ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
-        t[f"vol_{cle}"] = t["jour"].map(par_jour["v"]).fillna(0).round().astype(int)
+    t = _flux_des_jours(df, pd.date_range(pd.Timestamp(debut), pd.Timestamp(fin), freq="D"))
     ouvre = [j.weekday() < 5 and j.date() not in jours_feries(j.year) for j in t["jour"]]
     activite = t[[c for c in t.columns if c != "jour"]].sum(axis=1) > 0
     return t[pd.Series(ouvre, index=t.index) | activite].reset_index(drop=True)
@@ -1059,21 +1134,12 @@ def flux_par_jour(df: pd.DataFrame, date_export: date, nb_jours: int = 20) -> pd
     """
     Flux des `nb_jours` derniers jours ouvrés avant la date de l'export, calculé
     directement à partir des dates de l'export (pas besoin d'archives).
-    Colonnes : jour, puis lots_/ops_ creation, envoi, retour.
     """
     jours, j = [], date_export
     for _ in range(nb_jours):
         j = jour_ouvre_precedent(j)
         jours.append(pd.Timestamp(j))
-    jours = jours[::-1]
-    lots = lots_et_dates(df)
-    t = pd.DataFrame({"jour": jours})
-    for cle, col, _ in ETAPES_FLUX:
-        par_jour = lots.groupby(col).agg(n=("lot", "size"), o=("nb_ops", "sum"), v=("volume", "sum"))
-        t[f"lots_{cle}"] = t["jour"].map(par_jour["n"]).fillna(0).astype(int)
-        t[f"ops_{cle}"] = t["jour"].map(par_jour["o"]).fillna(0).astype(int)
-        t[f"vol_{cle}"] = t["jour"].map(par_jour["v"]).fillna(0).round().astype(int)
-    return t
+    return _flux_des_jours(df, jours[::-1])
 
 
 def resume_archive(df: pd.DataFrame, res: dict, date_export: date,
@@ -1095,6 +1161,7 @@ def resume_archive(df: pd.DataFrame, res: dict, date_export: date,
 
     synthese = {
         "date_export": date_export.isoformat(),
+        "semaine_export": int(pd.Timestamp(date_export).isocalendar().week),
         "date_archivage": pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"),
         "nb_operations_a_integrer": int(res["lots"]["nb_ops"].sum() + res["ajouts"]["nb_ops"].sum()),
         "nb_lots_a_creer": int(len(res["lots"])),

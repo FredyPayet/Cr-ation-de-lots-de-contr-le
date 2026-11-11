@@ -3,8 +3,9 @@ rapport_pdf.py — Rapport hebdomadaire au format PDF
 ===================================================
 
 Construit le PDF joint au mail hebdomadaire, à partir de l'archive :
-    Page 1 : schéma du flux du contrôle + tableau des indicateurs
-             (valeur de l'export, valeur de l'export précédent, évolution)
+    Page 1 : schéma du flux du contrôle + tableaux des indicateurs
+             (avec / sans date réelle de réalisation, export précédent, évolution ;
+             la catégorie « Rénovation globale audit » est présentée à part)
     Page 2 : lots par étape (camembert), lots en contrôle par bureau (histogramme empilé),
              flux d'activité des 20 derniers jours ouvrés, évolution d'un export à l'autre
 
@@ -30,6 +31,8 @@ from reportlab.platypus import (Image, PageBreak, Paragraph, SimpleDocTemplate, 
 
 # Couleurs (identiques à l'application)
 BLEU, ORANGE, VERT, GRIS, ROUGE = "#1F5FAD", "#D97706", "#2E7D32", "#8A9BB0", "#C2410C"
+VIOLET = "#7C3AED"                      # catégorie « Rénovation globale audit »
+AUDIT = "Rénovation globale audit"
 TEXTE, TEXTE_DOUX = "#1A202C", "#4A5568"
 plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10, "axes.edgecolor": "#CBD5E0",
                      "axes.labelcolor": TEXTE, "xtick.color": TEXTE, "ytick.color": TEXTE})
@@ -93,10 +96,12 @@ def schema_flux(ligne: dict):
     Schéma : flèche « créés » → 3 carrés (stocks : lots, opérations, volume MWhc) reliés
     par les flèches « envoyés » et « restitués » (flux de la période).
     """
-    fig, ax = plt.subplots(figsize=(10, 3.45))
+    avec_audit = not pd.isna(ligne.get("audit_lots_en_controle"))
+    bas = -0.55 if avec_audit else 0.3
+    fig, ax = plt.subplots(figsize=(10, 3.75 - bas))
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)   # 1 unité = 1 pouce
     ax.set_xlim(0, 10)
-    ax.set_ylim(0.3, 3.75)
+    ax.set_ylim(bas, 3.75)
     ax.set_aspect("equal")
     ax.axis("off")
     etapes = [
@@ -148,6 +153,29 @@ def schema_flux(ligne: dict):
                 fontsize=9.5, color=TEXTE_DOUX)
     ax.text(0.02, 3.73, f"Flèches : activité {periode}", ha="left", va="top", fontsize=10,
             color=TEXTE_DOUX, style="italic")
+
+    # Bandeau de la catégorie « Rénovation globale audit » (suivie à part)
+    if avec_audit:
+        ax.add_patch(FancyBboxPatch((0.08, -0.47), 9.84, 0.82, boxstyle="round,pad=0,rounding_size=0.12",
+                                    facecolor="#F3EEFE", edgecolor=VIOLET, linewidth=1.6))
+        ax.text(0.25, 0.14, "RÉNOVATION GLOBALE AUDIT", ha="left", va="center", fontsize=9,
+                fontweight="bold", color=VIOLET)
+        ax.text(0.25, -0.08, "BAR-TH-145 / 177 sans date réelle", ha="left", va="center",
+                fontsize=8, color=TEXTE_DOUX)
+        ax.text(0.25, -0.28, "suivie à part (non comptée ci-dessus)", ha="left", va="center",
+                fontsize=8, color=TEXTE_DOUX)
+        blocs = [(3.55, "En création", _somme(ligne, "audit_lots_en_constitution", "audit_lots_demande_coordonnees"),
+                  ligne.get("audit_ops_en_creation"), "creation", "créés"),
+                 (5.8, "En contrôle", ligne.get("audit_lots_en_controle"), ligne.get("audit_ops_en_controle"),
+                  "envoi", "envoyés"),
+                 (8.05, "À traiter", ligne.get("audit_lots_restitues"), ligne.get("audit_ops_restitues"),
+                  "retour", "restitués")]
+        for x, nom, lots, ops, cle, verbe in blocs:
+            ax.text(x, 0.16, f"{nom} : {_n(lots)} lots", ha="center", va="center", fontsize=10.5,
+                    fontweight="bold", color=TEXTE)
+            ax.text(x, -0.07, f"{_n(ops)} opérations", ha="center", va="center", fontsize=9, color=TEXTE_DOUX)
+            ax.text(x, -0.29, f"{_n(ligne.get(f'{prefixe}audit_lots_{cle}'))} lots {verbe} sur la période",
+                    ha="center", va="center", fontsize=8.5, color=VIOLET)
     return fig
 
 
@@ -160,12 +188,15 @@ def camembert_etapes(etapes: pd.DataFrame):
     palette = [BLEU, "#6A9BD8", ORANGE, VERT, GRIS, "#7C3AED", "#0E7490", "#B45309"]
     valeurs = etapes["nb_lots"].astype(int).tolist()
     total = sum(valeurs)
-    _, _, textes = ax.pie(valeurs, colors=palette[:len(valeurs)], startangle=90, counterclock=False,
+    autres = iter([c for c in palette if c != VIOLET] * 3)
+    couleurs = [VIOLET if e == AUDIT else next(autres) for e in etapes["etape"]]   # audit : toujours violet
+    _, _, textes = ax.pie(valeurs, colors=couleurs, startangle=90, counterclock=False,
                           wedgeprops=dict(width=0.45, edgecolor="white", linewidth=2),
                           autopct=lambda p: f"{p:.0f} %\n({round(p * total / 100)})" if p >= 4 else "",
                           pctdistance=0.78, textprops=dict(fontsize=8.5, color="white", fontweight="bold"))
     ax.text(0, 0, f"{total}\nlots", ha="center", va="center", fontsize=12, fontweight="bold", color=TEXTE)
-    ax.legend(etapes["etape"], loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8.5)
+    ax.legend([f"{e} ({v})" for e, v in zip(etapes["etape"], valeurs)], loc="center left",
+              bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8.5)
     ax.set_title("Lots par étape de contrôle", fontsize=11, fontweight="bold", color=TEXTE, loc="left")
     return fig
 
@@ -179,19 +210,28 @@ def histogramme_bureaux(bureaux: pd.DataFrame):
     noms = [textwrap.fill(b, 11) for b in bureaux["bureau"]]
     ok = bureaux["lots_delai_ok"].fillna(0).astype(int).values
     retard = bureaux["lots_plus_5_sem"].fillna(0).astype(int).values
+    audit = (bureaux["lots_audit"].fillna(0).astype(int).values if "lots_audit" in bureaux
+             else ok * 0)
     ax.bar(noms, ok, color=BLEU, label="5 semaines ou moins")
     ax.bar(noms, retard, bottom=ok, color=ROUGE, label="Plus de 5 semaines")
-    for i, (a, b) in enumerate(zip(ok, retard)):
+    ax.bar(noms, audit, bottom=ok + retard, color=VIOLET, hatch="///", edgecolor="white", linewidth=0,
+           label=AUDIT)
+    for i, (a, b, c) in enumerate(zip(ok, retard, audit)):
         if a:
             ax.text(i, a / 2, str(a), ha="center", va="center", color="white", fontsize=8.5, fontweight="bold")
         if b:
             ax.text(i, a + b / 2, str(b), ha="center", va="center", color="white", fontsize=8.5, fontweight="bold")
-        ax.text(i, a + b + 0.2, str(a + b), ha="center", va="bottom", fontsize=9, fontweight="bold", color=TEXTE)
-    ax.set_ylim(0, max((ok + retard).max(), 1) * 1.2)
+        if c:
+            ax.text(i, a + b + c / 2, str(c), ha="center", va="center", color="white", fontsize=8.5,
+                    fontweight="bold")
+        ax.text(i, a + b + c + 0.2, str(a + b + c), ha="center", va="bottom", fontsize=9, fontweight="bold",
+                color=TEXTE)
+    ax.set_ylim(0, max((ok + retard + audit).max(), 1) * 1.2)
     ax.tick_params(axis="x", labelsize=7.5)
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_ylabel("Lots en cours de contrôle")
-    ax.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2)
+    ax.legend(frameon=False, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3,
+              columnspacing=1.0, handlelength=1.4)
     ax.set_title("Lots en contrôle par bureau", fontsize=11, fontweight="bold", color=TEXTE, loc="left")
     return fig
 
@@ -207,14 +247,21 @@ def histogramme_flux(flux: pd.DataFrame):
     l = 0.27
     for k, (cle, nom, c) in enumerate([("creation", "Lots créés", BLEU), ("envoi", "Lots envoyés", ORANGE),
                                        ("retour", "Lots restitués", VERT)]):
-        ax.bar([i + (k - 1) * l for i in x], flux[f"lots_{cle}"], width=l, color=c, label=nom)
+        positions = [i + (k - 1) * l for i in x]
+        base = flux[f"lots_{cle}"].fillna(0).astype(float).values
+        ax.bar(positions, base, width=l, color=c, label=nom)
+        if f"audit_lots_{cle}" in flux:   # catégorie audit : empilée au-dessus, hachurée
+            ax.bar(positions, flux[f"audit_lots_{cle}"].fillna(0).astype(float).values, bottom=base,
+                   width=l, color=VIOLET, hatch="///", edgecolor="white", linewidth=0,
+                   label=f"dont en plus : {AUDIT}" if k == 0 else None)
     ax.set_xticks(list(x))
     ax.set_xticklabels([f"{JOURS[j.weekday()]}\n{j:%d/%m}" for j in pd.to_datetime(flux["jour"])], fontsize=7.5)
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_ylabel("Nombre de lots")
     ax.yaxis.grid(True, color="#E5E9F0")
     ax.set_axisbelow(True)
-    ax.legend(frameon=False, fontsize=8.5, ncol=3, loc="upper left")
+    ax.legend(frameon=False, fontsize=8.5, ncol=4, loc="upper left")
+    ax.set_ylim(0, max(ax.get_ylim()[1], 1) * 1.18)   # place pour la légende
     ax.set_title("Flux d'activité par jour ouvré", fontsize=11, fontweight="bold", color=TEXTE, loc="left")
     return fig
 
@@ -231,19 +278,25 @@ def courbes_evolution(synthese: pd.DataFrame):
         return fig
     etiquettes = [pd.Timestamp(d).strftime("%d/%m") for d in s["date_export"]]
     creation = s["lots_en_constitution"].astype(float) + s["lots_demande_coordonnees"].astype(float)
+    # Catégorie audit : tous ses lots (création + contrôle + à traiter) ; absente des anciens exports
+    audit = (s["audit_lots_en_constitution"].astype(float) + s["audit_lots_demande_coordonnees"].astype(float)
+             + s["audit_lots_en_controle"].astype(float) + s["audit_lots_restitues"].astype(float))
     for valeurs, nom, c, style in [(creation, "Lots en création", BLEU, "-"),
                                    (s["lots_en_controle"].astype(float), "Lots en contrôle", ORANGE, "-"),
                                    (s["lots_controle_plus_5_sem"].astype(float), "dont > 5 semaines", ROUGE, "--"),
-                                   (s["lots_restitues"].astype(float), "Lots à traiter", VERT, "-")]:
-        ax.plot(etiquettes, valeurs, style, marker="o", color=c, linewidth=2, label=nom)
-        ax.annotate(f"{int(valeurs.iloc[-1])}", (len(etiquettes) - 1, valeurs.iloc[-1]),
-                    textcoords="offset points", xytext=(6, 0), va="center", fontsize=8.5, color=c,
-                    fontweight="bold")
+                                   (s["lots_restitues"].astype(float), "Lots à traiter", VERT, "-"),
+                                   (audit, f"{AUDIT} (tous ses lots)", VIOLET, ":")]:
+        ax.plot(etiquettes, valeurs, style, marker="s" if c == VIOLET else "o", color=c, linewidth=2, label=nom)
+        if not pd.isna(valeurs.iloc[-1]):
+            ax.annotate(f"{int(valeurs.iloc[-1])}", (len(etiquettes) - 1, valeurs.iloc[-1]),
+                        textcoords="offset points", xytext=(6, 0), va="center", fontsize=8.5, color=c,
+                        fontweight="bold")
     ax.spines[["top", "right"]].set_visible(False)
     ax.yaxis.grid(True, color="#E5E9F0")
     ax.set_axisbelow(True)
     ax.set_ylabel("Nombre de lots")
-    ax.legend(frameon=False, fontsize=8.5, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
+    ax.legend(frameon=False, fontsize=8, ncol=5, loc="upper center", bbox_to_anchor=(0.5, -0.12),
+              columnspacing=1.2)
     ax.set_title("Évolution des stocks de lots (exports archivés)", fontsize=11, fontweight="bold",
                  color=TEXTE, loc="left")
     return fig
@@ -320,25 +373,81 @@ def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = 
                        f"{periode_flux(ligne)[1]}. Opé. = nombre d'opérations de ces lots.",
                        styles["texte"]))
 
-    h.append(Paragraph("Indicateurs clés", styles["h2"]))
+    # ---- Tableau 1 : lots et opérations, avec / sans date réelle (hors audit) ----
+    h.append(Paragraph("Indicateurs clés — lots et opérations", styles["h2"]))
+    h.append(Paragraph("Hors catégorie « Rénovation globale audit ». Un lot qui contient à la fois des "
+                       "lignes avec et sans date réelle de réalisation est compté dans les deux colonnes.",
+                       styles["texte"]))
+    h.append(Spacer(1, 4))
+
+    def cat(lib, *cols, sous=False):
+        """Ligne : avec date réelle, sans date réelle, total, total de l'export précédent."""
+        total = _somme(ligne, *cols)
+        return (lib, _somme(ligne, *["ad_" + c for c in cols]), _somme(ligne, *["sd_" + c for c in cols]),
+                total, _somme(avant, *cols) if avant else None, sous)
+
+    lignes_cat = [
+        cat("Lots en création (constitution + coordonnées)", "lots_en_constitution", "lots_demande_coordonnees"),
+        cat("    dont en cours de constitution", "lots_en_constitution", sous=True),
+        cat("    dont en demande de coordonnées", "lots_demande_coordonnees", sous=True),
+        cat("Opérations en création", "ops_en_creation"),
+        cat("Lots en cours de contrôle", "lots_en_controle"),
+        cat("    dont envoyés depuis plus de 5 semaines", "lots_controle_plus_5_sem", sous=True),
+        cat("Opérations en cours de contrôle", "ops_en_controle"),
+        cat("    dont depuis plus de 5 semaines", "ops_controle_plus_5_sem", sous=True),
+        cat("Lots restitués à traiter", "lots_restitues"),
+        cat("Opérations restituées à traiter", "ops_restitues"),
+        cat("Opérations éligibles", "ops_eligibles"),
+        cat("    dont intégrables dans un lot (délai > 2 mois)", "ops_integrables_delai_2_mois", sous=True),
+    ]
+    date_avant = _d(avant.get("date_export")) if avant else "précédent"
+    donnees = [["Indicateur", "Avec date\nréelle", "Sans date\nréelle", f"Total\n{_d(date_iso)}",
+                f"Total\n{date_avant}", "Évolution"]] + [
+        [lib, _n(ad), _n(sd), _n(t), _n(a), _ecart(t, a)] for lib, ad, sd, t, a, _ in lignes_cat]
+    tab = Table(donnees, colWidths=[7.0 * cm, 2.1 * cm, 2.1 * cm, 2.3 * cm, 2.3 * cm, 2.0 * cm], repeatRows=1)
+    style_base = [
+        ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8.5),
+        ("FONT", (0, 1), (-1, -1), "Helvetica", 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BLEU)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]
+    style = list(style_base) + [("LINEAFTER", (2, 0), (2, -1), 0.6, colors.HexColor("#CBD5E0"))]
+    for i, (*_, sous) in enumerate(lignes_cat, start=1):
+        if sous:
+            style.append(("TEXTCOLOR", (0, i), (-1, i), colors.HexColor(TEXTE_DOUX)))
+        else:
+            style.append(("FONT", (0, i), (0, i), "Helvetica-Bold", 8.5))
+            style.append(("FONT", (3, i), (3, i), "Helvetica-Bold", 8.5))
+            style.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#F3F6FA")))
+    tab.setStyle(TableStyle(style))
+    h.append(tab)
+
+    # ---- Tableau 2 : audit, volumes, constitution des lots ----
     def ind(lib, col, sous=False):
         return (lib, ligne.get(col), avant.get(col), sous)
 
     # Tableau en sections : None = ligne de titre de section
     lignes_tab = [
-        ("LOTS ET OPÉRATIONS", None, None, None),
+        ("RÉNOVATION GLOBALE AUDIT — fiches BAR-TH-145 et BAR-TH-177 sans date réelle de réalisation "
+         "(non comptées ailleurs)", None, None, None),
         ("Lots en création (constitution + coordonnées)",
-         _somme(ligne, "lots_en_constitution", "lots_demande_coordonnees"),
-         _somme(avant, "lots_en_constitution", "lots_demande_coordonnees") if avant else None, False),
-        ind("    dont en cours de constitution", "lots_en_constitution", True),
-        ind("    dont en demande de coordonnées", "lots_demande_coordonnees", True),
-        ind("Lots en cours de contrôle", "lots_en_controle"),
-        ind("    dont envoyés depuis plus de 5 semaines", "lots_controle_plus_5_sem", True),
-        ind("Opérations en cours de contrôle", "ops_en_controle"),
-        ind("    dont depuis plus de 5 semaines", "ops_controle_plus_5_sem", True),
-        ind("Lots restitués à traiter", "lots_restitues"),
-        ind("Opérations éligibles", "ops_eligibles"),
-        ind("    dont intégrables dans un lot (délai > 2 mois)", "ops_integrables_delai_2_mois", True),
+         _somme(ligne, "audit_lots_en_constitution", "audit_lots_demande_coordonnees"),
+         _somme(avant, "audit_lots_en_constitution", "audit_lots_demande_coordonnees") if avant else None, False),
+        ind("    opérations de ces lots", "audit_ops_en_creation", True),
+        ind("Lots en cours de contrôle", "audit_lots_en_controle"),
+        ind("    opérations de ces lots", "audit_ops_en_controle", True),
+        ind("    dont lots envoyés depuis plus de 5 semaines", "audit_lots_controle_plus_5_sem", True),
+        ind("Lots restitués à traiter", "audit_lots_restitues"),
+        ind("    opérations de ces lots", "audit_ops_restitues", True),
+        ind("Opérations éligibles", "audit_ops_eligibles"),
+        ("Volume de la catégorie, toutes étapes (MWhc, à titre indicatif)",
+         _somme(ligne, "audit_vol_en_creation", "audit_vol_en_controle", "audit_vol_restitues", "audit_vol_eligibles"),
+         _somme(avant, "audit_vol_en_creation", "audit_vol_en_controle", "audit_vol_restitues",
+                "audit_vol_eligibles") if avant else None, True),
         ("VOLUME CUMAC (MWhc) — hors lignes sans date réelle de réalisation", None, None, None),
         ind("Volume en création (constitution + coordonnées)", "vol_en_creation"),
         ind("    dont en cours de constitution", "vol_en_constitution", True),
@@ -358,47 +467,46 @@ def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = 
     donnees = [entete] + [[lib, "", "", ""] if sous is None else [lib, _n(v), _n(a), _ecart(v, a)]
                           for lib, v, a, sous in lignes_tab]
     tab = Table(donnees, colWidths=[8.8 * cm, 3.0 * cm, 3.0 * cm, 3.0 * cm], repeatRows=1)
-    style = [
-        ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8.5),
-        ("FONT", (0, 1), (-1, -1), "Helvetica", 8.5),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BLEU)),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-        ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-    ]
-    for i, (_, _, _, sous) in enumerate(lignes_tab, start=1):
+    style = list(style_base)
+    for i, (lib, _, _, sous) in enumerate(lignes_tab, start=1):
         if sous is None:   # titre de section
+            couleur = VIOLET if lib.startswith("RÉNOVATION") else BLEU
             style += [("SPAN", (0, i), (-1, i)), ("FONT", (0, i), (-1, i), "Helvetica-Bold", 7.5),
-                      ("TEXTCOLOR", (0, i), (-1, i), colors.HexColor(BLEU)),
-                      ("TOPPADDING", (0, i), (-1, i), 7), ("LINEBELOW", (0, i), (-1, i), 0.8, colors.HexColor(BLEU))]
+                      ("TEXTCOLOR", (0, i), (-1, i), colors.HexColor(couleur)),
+                      ("TOPPADDING", (0, i), (-1, i), 7), ("LINEBELOW", (0, i), (-1, i), 0.8, colors.HexColor(couleur))]
         elif sous:
             style.append(("TEXTCOLOR", (0, i), (-1, i), colors.HexColor(TEXTE_DOUX)))
         else:
             style.append(("FONT", (0, i), (1, i), "Helvetica-Bold", 8.5))
             style.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#F3F6FA")))
     tab.setStyle(TableStyle(style))
+    h.append(PageBreak())   # le second tableau commence en haut de la page 2
+    h.append(Paragraph("Indicateurs clés — audit, volumes et constitution des lots", styles["h2"]))
     h.append(tab)
 
     # ---------------- Page 2 ----------------
     prefixe, periode = periode_flux(ligne)
     titre_flux = [Paragraph("Flux de la période", styles["h2"]),
                   Paragraph(f"Activité {periode}.", styles["texte"]), Spacer(1, 4)]
-    flux_tab = [["", "Lots", "Opérations", "Volume (MWhc)"]] + [
+    flux_tab = [["", "Lots", "Opérations", "Volume (MWhc)", "Audit réno.\nglobale : lots",
+                 "Audit réno.\nglobale : opé."]] + [
         [nom, _n(ligne.get(f"{prefixe}lots_{cle}")), _n(ligne.get(f"{prefixe}ops_{cle}")),
-         _n(ligne.get(f"{prefixe}vol_{cle}"))]
+         _n(ligne.get(f"{prefixe}vol_{cle}")), _n(ligne.get(f"{prefixe}audit_lots_{cle}")),
+         _n(ligne.get(f"{prefixe}audit_ops_{cle}"))]
         for nom, cle in (("Lots créés", "creation"), ("Lots envoyés aux bureaux de contrôle", "envoi"),
                          ("Lots restitués", "retour"))]
-    tf = Table(flux_tab, colWidths=[8.8 * cm, 3.0 * cm, 3.0 * cm, 3.0 * cm])
+    tf = Table(flux_tab, colWidths=[6.2 * cm, 1.9 * cm, 2.2 * cm, 2.7 * cm, 2.4 * cm, 2.4 * cm])
     tf.setStyle(TableStyle([
         ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8.5), ("FONT", (0, 1), (-1, -1), "Helvetica", 8.5),
         ("FONT", (1, 1), (1, -1), "Helvetica-Bold", 8.5),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BLEU)), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (1, 0), (-1, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+        ("TEXTCOLOR", (4, 1), (5, -1), colors.HexColor(VIOLET)),
         ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
-    h.append(KeepTogether(titre_flux + [tf]))
+    h.append(KeepTogether(titre_flux + [tf, Paragraph(
+        "Les colonnes « Audit réno. globale » s'ajoutent aux autres : cette catégorie n'est pas comptée "
+        "dans les lots, opérations et volumes de gauche.", styles["texte"])]))
     etapes = archive["etapes"][archive["etapes"]["date_export"] == date_iso]
     bureaux = archive["bureaux"][archive["bureaux"]["date_export"] == date_iso]
     duo = Table([[_image(camembert_etapes(etapes), largeur / cm / 2 - 0.2),
@@ -413,6 +521,7 @@ def generer_pdf(archive: dict, date_iso: str, flux_jours: pd.DataFrame | None = 
         flux_jours = pd.DataFrame({"jour": pd.to_datetime(arch["date_reference_flux"])})
         for cle in ("creation", "envoi", "retour"):
             flux_jours[f"lots_{cle}"] = arch[f"flux_lots_{cle}"].astype(float).values
+            flux_jours[f"audit_lots_{cle}"] = arch[f"flux_audit_lots_{cle}"].astype(float).fillna(0).values
         source = "un jour par export archivé"
     elif prefixe == "flux_periode_":
         source = f"jour par jour {periode}"

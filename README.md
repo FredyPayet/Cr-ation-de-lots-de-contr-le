@@ -13,7 +13,7 @@ aux bureaux de contrôle, et qui archive les résultats de chaque export.
 | `exports.py` | Fichiers Excel téléchargés (un fichier par fiche CEE, un onglet par lot) |
 | `stockage.py` | Archive et réglages (Google Sheet ou dossier local), lecture de la liste des clients |
 | `rapport_pdf.py` | Rapport PDF hebdomadaire (schéma du flux, indicateurs, graphiques) |
-| `messagerie.py` | Mail hebdomadaire : texte formel et création du brouillon Gmail |
+| `messagerie.py` | Mail hebdomadaire : texte formel et fichier de mail à ouvrir dans Outlook |
 | `requirements.txt` | Bibliothèques Python nécessaires |
 | `.streamlit/config.toml` | Couleurs et taille maximale des fichiers chargés |
 | `.streamlit/secrets.toml.exemple` | Modèle des « secrets » pour le Google Sheet d'archive |
@@ -46,9 +46,12 @@ conserver toutes les archives, l'application les écrit dans un Google Sheet gr�
 **compte de service** : une sorte d'utilisateur « robot » Google, gratuit, à qui vous
 donnez accès au fichier.
 
-### Étape 1 — Créer le Google Sheet d'archive
-1. Créez un Google Sheet vide, par exemple « Archive création des lots ».
-2. Copiez son lien depuis la barre d'adresse.
+### Étape 1 — Le Google Sheet d'archive
+L'archive va dans votre Google Sheet **« Création de lots »**, onglet **« Archives données
+exports »** (une ligne par export, avec la **semaine de l'année** de la date d'export) :
+https://docs.google.com/spreadsheets/d/1_g1s7FYHFbV2tCML_h88iJBlBI5Lu-Vc00OL3lBrg3U/edit
+Ce lien est déjà connu de l'application. Pour utiliser un autre fichier, indiquez son lien dans
+les secrets (`[archive] google_sheet_url`).
 
 ### Étape 2 — Créer le compte de service
 1. Ouvrez https://console.cloud.google.com et connectez-vous.
@@ -66,7 +69,7 @@ donnez accès au fichier.
 ### Étape 3 — Donner accès au Google Sheet
 1. Ouvrez le fichier `.json` avec le Bloc-notes et copiez l'adresse `client_email`
    (elle ressemble à `archive-lots@creation-lots.iam.gserviceaccount.com`).
-2. Dans le Google Sheet d'archive : **Partager** → collez cette adresse → rôle **Éditeur** →
+2. Dans le Google Sheet « Création de lots » : **Partager** → collez cette adresse → rôle **Éditeur** →
    décochez « Envoyer une notification » → **Partager**.
 3. *(Facultatif)* Partagez aussi le Google Sheet des **clients à lots réservés** avec cette
    adresse, en **Lecteur**. Il pourra alors rester privé, sans lien public.
@@ -74,7 +77,8 @@ donnez accès au fichier.
 ### Étape 4 — Coller les « secrets » dans Streamlit Cloud
 1. Sur https://share.streamlit.io, ouvrez votre application → **⋮ → Settings → Secrets**.
 2. Copiez le contenu de `.streamlit/secrets.toml.exemple`, puis remplacez chaque valeur par celle
-   du fichier `.json` (même nom de champ). Collez le lien du Google Sheet dans `google_sheet_url`.
+   du fichier `.json` (même nom de champ). La ligne `google_sheet_url` contient déjà le lien du
+   Google Sheet « Création de lots ».
    - Pour `private_key`, recopiez la valeur telle quelle, **avec les `\n`**, entre guillemets.
 3. **Save**. L'application redémarre. En haut du panneau de gauche, vous devez voir :
    « 💾 Archive et réglages enregistrés dans le Google Sheet d'archive ✅ ».
@@ -85,14 +89,20 @@ Google Sheet n'a pas été partagé avec l'adresse `client_email`.
 ### Ce que contient le Google Sheet
 | Onglet | Contenu |
 |---|---|
-| Synthèse | Une ligne par export archivé : création des lots, 9 indicateurs de suivi et flux d'activité |
+| Archives données exports | Une ligne par export archivé : date de l'export, **semaine de l'année** (numéro ISO, 1 à 53), création des lots, indicateurs de suivi (total hors audit, avec / sans date réelle, audit), volumes et flux |
 | Détail bénéficiaires | Opérations intégrées par bénéficiaire et par fiche CEE |
 | Lots par étape | Nombre de lots par étape de contrôle (pour le camembert) |
-| Bureaux en contrôle | Lots en cours de contrôle par bureau : ≤ 5 semaines / > 5 semaines |
+| Bureaux en contrôle | Lots en cours de contrôle par bureau : ≤ 5 semaines / > 5 semaines / Rénovation globale audit |
 | Graphiques | Camembert et histogramme empilé du **dernier export archivé**, plus l'histogramme du flux d'activité (un jour par export archivé), mis à jour à chaque archivage |
 | Paramètres | Pourcentages des bureaux et lien du Google Sheet clients |
 
-Ne renommez pas les onglets. Vous pouvez ajouter vos propres onglets ou graphiques à côté.
+Ne renommez pas les onglets. Vous pouvez ajouter vos propres onglets ou graphiques à côté
+(l'onglet « BS spécifiques » n'est pas modifié).
+
+**Vous utilisiez un autre Google Sheet d'archive ?** Deux possibilités : gardez son lien dans les
+secrets (un onglet « Archives données exports » y est créé et les lignes de l'ancien onglet
+« Synthèse » y sont recopiées automatiquement), ou passez au fichier « Création de lots » :
+téléchargez d'abord l'archive complète (onglet Historique), changez le lien, puis réimportez-la.
 
 ### Reprendre l'archive existante
 Avant de mettre la nouvelle version en ligne : onglet **Historique → Sauvegarder ou restaurer
@@ -100,39 +110,59 @@ l'archive → Télécharger l'archive complète**. Une fois le Google Sheet conf
 fichier au même endroit. Les dates déjà présentes ne sont pas dupliquées. Si l'archive locale
 existe encore au démarrage, l'application la copie aussi automatiquement dans le Google Sheet.
 
-## Mail hebdomadaire aux managers (brouillon Gmail)
+## Mail hebdomadaire aux managers (envoi depuis Outlook)
 
 L'onglet **📧 Rapport hebdomadaire** prépare un mail formel. Il contient les chiffres clés de
-l'export, leur évolution depuis l'export précédent et le flux de la veille, avec en pièce
-jointe un **PDF** : schéma du flux, tableau des indicateurs, camembert, histogramme des
-bureaux, flux sur 20 jours ouvrés et évolution des stocks.
-Le mail est déposé dans les **Brouillons** de la boîte Gmail. Rien n'est envoyé : vous le
-relisez dans Gmail, puis vous cliquez sur Envoyer.
+l'export, leur évolution depuis l'export précédent et le flux de la période, avec en pièce
+jointe un **PDF** : schéma du flux, tableaux des indicateurs, camembert, histogramme des
+bureaux, flux jour par jour et évolution des stocks.
+L'application **n'envoie rien** et ne se connecte à aucune boîte mail : elle prépare un fichier
+de mail que vous ouvrez dans l'application **Outlook** de votre ordinateur. Aucune
+configuration, aucun mot de passe.
 
 **Chaque semaine** :
 1. Chargez l'export et archivez-le.
 2. Ouvrez l'onglet 📧 et vérifiez les destinataires et le texte.
-3. Cliquez sur **Créer le brouillon dans Gmail**.
-4. Dans Gmail → Brouillons, relisez puis envoyez.
+3. Cliquez sur **📧 Préparer le mail pour Outlook** : un fichier `.eml` est téléchargé.
+4. Ouvrez ce fichier (double-clic) : Outlook affiche un nouveau message déjà rempli
+   (destinataires, objet, texte, PDF joint). Relisez, puis cliquez sur **Envoyer**.
 
-### Configuration (≈ 5 minutes, une seule fois)
-La connexion utilise un **mot de passe d'application** Google : un code de 16 lettres, propre
-à cette application. Ce n'est pas votre mot de passe habituel, et vous pouvez le révoquer à
-tout moment.
-1. Connectez-vous à **fredy.payet.ps@gmail.com**, puis ouvrez https://myaccount.google.com/security.
-2. Activez la **Validation en deux étapes** si ce n'est pas déjà fait (obligatoire).
-3. Ouvrez https://myaccount.google.com/apppasswords → nom « Création des lots » → **Créer**.
-   Copiez le code de 16 lettres affiché.
-4. Dans Streamlit Cloud → **Settings → Secrets**, ajoutez :
-   ```toml
-   [gmail]
-   adresse = "fredy.payet.ps@gmail.com"
-   mot_de_passe_application = "abcd efgh ijkl mnop"
-   ```
-5. **Save**. L'onglet 📧 affiche alors « Boîte d'envoi : fredy.payet.ps@gmail.com ✅ ».
+**Si le fichier s'ouvre comme un message reçu (sans bouton Envoyer)** : c'est le cas du
+« nouvel Outlook » de Windows, qui ne gère pas toujours ces fichiers. Dans l'onglet 📧, ouvrez
+« Le fichier ne s'ouvre pas comme un nouveau message ? » : téléchargez le PDF, cliquez sur
+**✉️ Ouvrir un nouveau message** (destinataires et objet pré-remplis), ajoutez le PDF en pièce
+jointe, puis envoyez. Vous pouvez aussi repasser à Outlook classique (bouton « Nouvel Outlook »
+en haut à droite d'Outlook).
+
+La section `[gmail]` des secrets Streamlit n'est plus utilisée : vous pouvez la supprimer, et
+révoquer le mot de passe d'application sur https://myaccount.google.com/apppasswords.
 
 Les destinataires (À / Copie) et la signature s'enregistrent avec le bouton prévu. Avec le
 Google Sheet d'archive, ils sont conservés dans l'onglet « Paramètres ».
+
+## Catégories de lignes (version 8)
+
+Chaque ligne de l'export appartient à une seule catégorie :
+
+| Catégorie | Lignes concernées | Où la voir |
+|---|---|---|
+| **Rénovation globale audit** | Fiche CEE `BAR-TH-145` ou `BAR-TH-177` **et** « Date réelle de réalisation » vide | Isolée partout : cartes « Audit », colonne du tableau, bandeau violet du schéma, partie violette hachurée des graphiques, section du PDF, phrase du mail. Elle n'est comptée dans **aucun** autre indicateur |
+| Avec date réelle | « Date réelle de réalisation » renseignée | Colonne « Avec date réelle » du tableau « Lots et opérations » |
+| Sans date réelle | « Date réelle de réalisation » vide, hors audit | Colonne « Sans date réelle » |
+
+- Les indicateurs habituels (cartes, schéma, mail) sont le **total hors audit** (avec + sans
+  date réelle).
+- Un lot qui contient des lignes de plusieurs catégories est compté une fois dans chacune.
+- Une fiche BAR-TH-145 / 177 **avec** date réelle de réalisation n'est pas dans la catégorie
+  audit : elle est comptée normalement.
+- Le volume de la catégorie audit est donné à part, à titre indicatif (ces lignes n'ont pas de
+  date réelle : il n'entre dans aucun autre volume).
+- Pour changer les fiches concernées : `FICHES_AUDIT` en haut de `regles.py`.
+
+**Exports archivés avant la version 8** : leurs chiffres comptaient encore l'audit avec le
+reste. Rechargez l'export concerné puis cliquez sur **➕ Compléter l'archive** : les indicateurs
+de suivi et les graphiques sont recalculés (délai de 5 semaines compté comme le jour de
+l'archivage d'origine). Les chiffres de création des lots ne sont pas modifiés.
 
 ## Indicateurs de suivi archivés
 | Indicateur | Calcul |
