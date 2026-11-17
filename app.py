@@ -108,31 +108,43 @@ VERSION_CODE = hashlib.md5(b"".join(
     open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
 
 # Vérification que tous les fichiers ont bien été mis à jour ensemble
-_regles_planning = any(c[2] == "statut_controle" for c in regles.COLONNES)   # version 9
-_versions_9 = [   # version 9 bis : PDF et archive du planning
-    ("stockage.py", hasattr(stockage, "archiver_planning")),
-    ("planning.py", planning is None or hasattr(planning, "resume")),
-    ("messagerie.py", "phrase_planning" in getattr(getattr(messagerie, "corps_par_defaut", None),
-                                                    "__code__", type("", (), {"co_varnames": ()})).co_varnames)]
-if not (all(ok for _, ok in _versions_9) and (planning is None or _regles_planning)
-        and hasattr(regles, "lignes_audit") and hasattr(stockage, "sans_categories")
-        and hasattr(messagerie, "fichier_outlook") and hasattr(exports, "excel_tableau")
-        and (rapport_pdf is None or hasattr(rapport_pdf, "AUDIT"))):
-    _anciens = [nom for nom, ok in [
-        ("regles.py", hasattr(regles, "lignes_audit")),
-        ("stockage.py", hasattr(stockage, "sans_categories")),
-        ("messagerie.py", hasattr(messagerie, "fichier_outlook")),
+def _fichiers_anciens() -> list[str]:
+    """Noms des fichiers dont la version en mémoire est plus ancienne que celle attendue."""
+    controles = [
+        ("regles.py", hasattr(regles, "lignes_audit")
+         and (planning is None or any(c[2] == "statut_controle" for c in regles.COLONNES))),
+        ("stockage.py", hasattr(stockage, "sans_categories") and hasattr(stockage, "archiver_planning")),
+        ("messagerie.py", hasattr(messagerie, "fichier_outlook") and "phrase_planning" in getattr(
+            getattr(messagerie, "corps_par_defaut", None), "__code__", type("", (), {"co_varnames": ()})).co_varnames),
         ("exports.py", hasattr(exports, "excel_tableau")),
-        ("rapport_pdf.py", rapport_pdf is None or hasattr(rapport_pdf, "AUDIT"))] if not ok]
-    if planning is not None and not _regles_planning:
-        _anciens.append("regles.py")
-    _anciens = list(dict.fromkeys(_anciens + [nom for nom, ok in _versions_9 if not ok]))
+        ("rapport_pdf.py", rapport_pdf is None or hasattr(rapport_pdf, "AUDIT")),
+        ("planning.py", planning is None or hasattr(planning, "resume")),
+    ]
+    return [nom for nom, ok in controles if not ok]
+
+
+if _fichiers_anciens():
+    # Après une mise à jour sur GitHub, le serveur garde parfois les anciens fichiers en mémoire :
+    # on les relit une fois depuis le disque avant de conclure qu'ils sont anciens.
+    import importlib
+    for _module in (regles, exports, stockage, messagerie, planning, rapport_pdf, planning_pdf):
+        if _module is not None:
+            try:
+                importlib.reload(_module)
+            except Exception:
+                pass
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    VERSION_CODE = hashlib.md5(b"".join(
+        open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
+
+if _fichiers_anciens():
     st.error("⚠️ Mise à jour incomplète. Fichier(s) encore à l'ancienne version sur GitHub : "
-             + ", ".join(_anciens) + ". "
+             + ", ".join(_fichiers_anciens()) + ". "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
              "stockage.py, messagerie.py, rapport_pdf.py, planning.py, planning_pdf.py) par ceux de la "
-             "dernière version, "
-             "puis redémarrez l'application.")
+             "dernière version. S'ils sont déjà à jour sur GitHub, redémarrez l'application : "
+             "« Manage app » en bas à droite, puis ⋮ → « Reboot app ».")
     st.stop()
 
 
