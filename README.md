@@ -179,14 +179,17 @@ coordonnées », « En cours de constitution » et « Lot restitué ».
   opérations ont dépassé le délai, la plus ancienne est gardée et le lot est signalé.
 - *Période 4* : date réelle d'engagement (colonne L, la plus ancienne du lot) jusqu'au
   31/12/2021 ; *Période 5* : après.
-- Pour chaque période : deux dates (« Du », « Au », incluses) et le bouton **🔍 Rechercher**.
-  Le tableau donne le lot, sa date urgente, son volume CUMAC (colonne J, lignes avec date réelle)
+- En haut de l'onglet, **une plage de dates par période** (Période 4 et Période 5, bornes
+  incluses), saisies une seule fois puis **🔍 Rechercher**. Elles s'appliquent au dépôt des lots
+  et aux actions sur les dossiers. Une période sans dates est affichée en entier. Le tableau
+  de chaque période donne le lot, sa date urgente, son volume CUMAC (colonne J, lignes avec date réelle)
   et son nombre d'opérations. Export Excel avec quelques colonnes en plus.
 
 **2. Actions sur les dossiers** — regroupement N° dossier + Fiche CEE, opérations abandonnées
-exclues. Plage de dates facultative (« Du », « Au », 🔍 Rechercher) sur la **date de réalisation
-urgente du lot** associé au dossier (même règle qu'au point 1 ; la plus urgente si le dossier est
-dans plusieurs lots ; un dossier sans lot est écarté quand une plage est choisie). Menu déroulant
+exclues. Les plages du haut de l'onglet s'appliquent aussi ici : un dossier est retenu si l'un de
+ses lots est dans la plage de **sa période** (période et date de réalisation urgente du lot, mêmes
+règles qu'au point 1). Un dossier sans lot est écarté dès qu'une plage est choisie. Colonne
+« Période » dans la liste. Menu déroulant
 pour choisir le critère, export Excel de chaque liste ou de toutes :
 
 | Critère | Règle |

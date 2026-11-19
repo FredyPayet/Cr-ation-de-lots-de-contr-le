@@ -765,6 +765,54 @@ with onglet_ecartes:
         aujourdhui = date.today()
         lots_dep, dossiers_act = calculer_depot(df, cle_fichier, aujourdhui)
 
+        # ---------------- Plages de dates : une par période (parties 1 et 2) ----------------
+        st.subheader("📅 Plages de dates")
+        st.markdown("Une plage par période, saisie **une seule fois** : elle s'applique au dépôt des lots et aux "
+                    "actions sur les dossiers (un dossier suit la période et la date urgente de son lot). Les "
+                    "dates portent sur la **date de réalisation urgente du lot**. Une période sans dates est "
+                    "affichée en entier.")
+        with st.form("form_plages_depot", border=True):
+            saisies = {}
+            for periode in depot.PERIODES:
+                cle_p = regles.normaliser(periode).replace(" ", "_")
+                st.markdown(f"**{periode}**")
+                c1, c2 = st.columns(2)
+                saisies[periode] = (
+                    c1.date_input(f"{periode} — du", value=None, format="DD/MM/YYYY", key=f"debut_{cle_p}"),
+                    c2.date_input(f"{periode} — au (inclus)", value=None, format="DD/MM/YYYY", key=f"fin_{cle_p}"))
+            cherche_p = st.form_submit_button("🔍 Rechercher", type="primary")
+        if cherche_p:
+            erreurs, nouvelles = [], {}
+            for periode, (d1, d2) in saisies.items():
+                if d1 is None and d2 is None:
+                    nouvelles[periode] = None                       # toutes les dates de la période
+                elif d1 is None or d2 is None:
+                    erreurs.append(f"{periode} : indiquez une date de début et une date de fin, ou videz les deux.")
+                elif d1 > d2:
+                    erreurs.append(f"{periode} : la date de début doit être avant la date de fin.")
+                else:
+                    nouvelles[periode] = (d1, d2)
+            if erreurs:
+                st.error(" ".join(erreurs))
+            else:
+                st.session_state["plages_depot"] = nouvelles
+        plages = st.session_state.get("plages_depot", {p: None for p in depot.PERIODES})
+        filtre_actif = any(v is not None for v in plages.values())
+
+        def texte_plage(p) -> str:
+            v = plages.get(p)
+            return f"du {v[0]:%d/%m/%Y} au {v[1]:%d/%m/%Y}" if v else "toutes dates"
+
+        def suffixe(p=None) -> str:
+            vals = [plages.get(p)] if p else [v for v in plages.values() if v]
+            if not vals or vals[0] is None:
+                return f"{date_export:%Y-%m-%d}"
+            return "_".join(f"{v[0]:%Y-%m-%d}_au_{v[1]:%Y-%m-%d}" for v in vals)
+
+        if filtre_actif:
+            st.info("📅 Plages appliquées — " + " ; ".join(f"**{p}** : {texte_plage(p)}" for p in depot.PERIODES)
+                    + ". Pour tout afficher, videz les dates puis cliquez sur Rechercher.")
+
         # ---------------- 1. Dépôt des lots ----------------
         st.subheader("1. Dépôt des lots")
         st.markdown(
@@ -790,27 +838,13 @@ with onglet_ecartes:
                     st.markdown(f"#### {periode}")
                     st.caption(f"{fr(len(tous))} lots, {fr(tous['nb_ops'].sum())} opérations au total.")
                     cle_p = regles.normaliser(periode).replace(" ", "_")   # « periode_4 » (sans accent)
-                    with st.form(f"form_{cle_p}", border=False):
-                        c1, c2, c3 = st.columns([2, 2, 1.4], vertical_alignment="bottom")
-                        debut = c1.date_input("Du (date de réalisation urgente)", value=None,
-                                              format="DD/MM/YYYY", key=f"debut_{cle_p}")
-                        fin = c2.date_input("Au (inclus)", value=None, format="DD/MM/YYYY", key=f"fin_{cle_p}")
-                        cherche = c3.form_submit_button("🔍 Rechercher", type="primary", width="stretch")
-                    if cherche:
-                        if debut is None or fin is None:
-                            st.session_state.pop(f"plage_{cle_p}", None)
-                            st.error("Indiquez une date de début et une date de fin, puis cliquez sur Rechercher.")
-                        elif debut > fin:
-                            st.session_state.pop(f"plage_{cle_p}", None)
-                            st.error("La date de début doit être avant la date de fin.")
-                        else:
-                            st.session_state[f"plage_{cle_p}"] = (debut, fin)
-                    plage = st.session_state.get(f"plage_{cle_p}")
-                    if plage is None:
-                        st.caption("Saisissez une plage de dates puis cliquez sur « Rechercher ».")
-                        continue
-                    trouves = depot.filtrer_lots(lots_dep, periode, *plage)
-                    titre_plage = f"du {plage[0]:%d/%m/%Y} au {plage[1]:%d/%m/%Y}"
+                    if plages.get(periode):
+                        trouves = depot.filtrer_lots(lots_dep, periode, *plages[periode])
+                    else:
+                        trouves = tous.reset_index(drop=True)
+                    titre_plage = texte_plage(periode)
+                    if not plages.get(periode):
+                        titre_plage = f"({titre_plage})"
                     if trouves.empty:
                         st.info(f"Aucun lot de la {periode} avec une date de réalisation urgente {titre_plage}.")
                         continue
@@ -827,7 +861,7 @@ with onglet_ecartes:
                     st.download_button(
                         f"⬇️ Exporter ces {fr(len(trouves))} lots (Excel)", key=f"export_{cle_p}",
                         data=exports.excel_tableau({periode: vue}), mime=XLSX,
-                        file_name=f"Depot_{cle_p}_{plage[0]:%Y-%m-%d}_au_{plage[1]:%Y-%m-%d}.xlsx",
+                        file_name=f"Depot_{cle_p}_{suffixe(periode)}.xlsx",
                         help="Les 4 colonnes affichées, plus l'échéance, l'étape, la fiche CEE et la date "
                              "d'engagement de chaque lot.")
             st.caption("Volume : somme de la colonne J « CUMAC MWhc TOTAL » des opérations du lot qui ont une "
@@ -836,37 +870,19 @@ with onglet_ecartes:
         # ---------------- 2. Actions sur les dossiers ----------------
         st.subheader("2. Actions sur les dossiers")
         st.markdown("Regroupement par **N° dossier et Fiche CEE** (opérations abandonnées exclues). "
-                    "Un même dossier peut relever de plusieurs critères. La **date du dossier** est la date de "
-                    "réalisation urgente de son lot (même règle qu'au point 1 ; la plus urgente si le dossier "
-                    "est dans plusieurs lots).")
+                    "Un même dossier peut relever de plusieurs critères. Un dossier suit la **période** et la "
+                    "**date de réalisation urgente de son lot** (mêmes règles qu'au point 1) : il est retenu si "
+                    "l'un de ses lots est dans la plage de sa période.")
 
-        # Plage de dates (facultative) sur la date de réalisation urgente du lot
-        with st.form("form_dossiers", border=True):
-            c1, c2, c3 = st.columns([2, 2, 1.4], vertical_alignment="bottom")
-            debut_d = c1.date_input("Du (date urgente du lot)", value=None, format="DD/MM/YYYY", key="debut_dossiers")
-            fin_d = c2.date_input("Au (inclus)", value=None, format="DD/MM/YYYY", key="fin_dossiers")
-            cherche_d = c3.form_submit_button("🔍 Rechercher", type="primary", width="stretch")
-        if cherche_d:
-            if debut_d is None and fin_d is None:
-                st.session_state.pop("plage_dossiers", None)       # aucune date : tous les dossiers
-            elif debut_d is None or fin_d is None:
-                st.error("Indiquez une date de début et une date de fin, ou videz les deux dates pour voir "
-                         "tous les dossiers.")
-            elif debut_d > fin_d:
-                st.error("La date de début doit être avant la date de fin.")
-            else:
-                st.session_state["plage_dossiers"] = (debut_d, fin_d)
-        plage_d = st.session_state.get("plage_dossiers")
+        # Mêmes plages que la partie 1 : chaque dossier suit la période et la date urgente de son lot
+        plage_d = filtre_actif
         sans_lot = int(dossiers_act["date_urgente_lot"].isna().sum()) if len(dossiers_act) else 0
-        if plage_d:
-            dossiers_act = depot.filtrer_dossiers(dossiers_act, *plage_d)
-            st.info(f"📅 Dossiers dont la date urgente du lot est entre le {plage_d[0]:%d/%m/%Y} et le "
-                    f"{plage_d[1]:%d/%m/%Y} : **{fr(len(dossiers_act))}**. Les cartes, la liste et les exports "
-                    f"ne portent que sur ces dossiers ({fr(sans_lot)} dossiers sans lot sont écartés). "
-                    "Pour tout revoir, videz les deux dates puis cliquez sur Rechercher.")
+        if filtre_actif:
+            dossiers_act = depot.filtrer_dossiers(df, dossiers_act, aujourdhui, plages)
+            st.caption(f"Plages appliquées ({'; '.join(f'{p} : {texte_plage(p)}' for p in depot.PERIODES)}) : "
+                       f"**{fr(len(dossiers_act))}** dossiers. Les {fr(sans_lot)} dossiers sans lot sont écartés.")
         else:
-            st.caption(f"Sans dates : tous les dossiers sont affichés, y compris {fr(sans_lot)} dossiers sans lot "
-                       "(sans date urgente).")
+            st.caption(f"Toutes dates : tous les dossiers sont affichés, y compris {fr(sans_lot)} dossiers sans lot.")
         comptes = {cle: int(dossiers_act[cle].sum()) if len(dossiers_act) else 0 for cle, *_ in depot.CRITERES}
         icones = {depot.SUPERVISER: "👀", depot.INCOMPLET: "📝", depot.A_SCINDER: "✂️",
                   depot.PIECE_NC: "📄", depot.OPERATION_NC: "❌"}
@@ -882,7 +898,7 @@ with onglet_ecartes:
             format_func=lambda c: (f"Tous les dossiers avec une action ({fr(len(dossiers_act))})" if c is None
                                    else f"{icones[c]} {dict((k, l) for k, l, _ in depot.CRITERES)[c]} "
                                         f"({fr(comptes[c])})"),
-            key=f"critere_dossiers_{plage_d}")   # menu recréé quand la plage change (comptes à jour)
+            key=f"critere_dossiers_{plages}")   # menu recréé quand la plage change (comptes à jour)
         liste = depot.liste_critere(dossiers_act, choix_critere)
         if liste.empty:
             st.success("Aucun dossier pour ce critère. 🎉")
@@ -900,9 +916,7 @@ with onglet_ecartes:
             g.download_button(f"⬇️ Exporter cette liste ({fr(len(vue))} lignes, Excel)", key="export_dossiers",
                               data=exports.excel_tableau({nom_liste[:31]: vue}), mime=XLSX, type="primary",
                               width="stretch",
-                              file_name=f"Actions_{regles.normaliser(nom_liste).replace(' ', '_')}_"
-                                        + (f"{plage_d[0]:%Y-%m-%d}_au_{plage_d[1]:%Y-%m-%d}" if plage_d
-                                           else f"{date_export:%Y-%m-%d}") + ".xlsx")
+                              file_name=f"Actions_{regles.normaliser(nom_liste).replace(' ', '_')}_{suffixe()}.xlsx")
         if len(dossiers_act):
             onglets_actions = {courts[c][:31]: depot.tableau_dossiers(depot.liste_critere(dossiers_act, c))
                                for c, *_ in depot.CRITERES}
@@ -911,8 +925,7 @@ with onglet_ecartes:
                 data=exports.excel_tableau({"Tous les dossiers": depot.tableau_dossiers(dossiers_act),
                                             **onglets_actions}),
                 mime=XLSX, width="stretch",
-                file_name=(f"Actions_sur_les_dossiers_{plage_d[0]:%Y-%m-%d}_au_{plage_d[1]:%Y-%m-%d}.xlsx"
-                           if plage_d else f"Actions_sur_les_dossiers_{date_export:%Y-%m-%d}.xlsx"))
+                file_name=f"Actions_sur_les_dossiers_{suffixe()}.xlsx")
 
         # ---------------- 3. Opérations écartées (2 motifs) ----------------
         st.subheader("3. Opérations écartées de la création des lots")

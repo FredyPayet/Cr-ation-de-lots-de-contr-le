@@ -24,9 +24,9 @@ Règles pures (aucun affichage), à partir de l'export ODICEE.
    - Pièce non conforme       : un « Stade » contient « 3R » ;
    - Opération non conforme   : un « Statut du contrôle » contient « Contrôle KO ».
    Les opérations abandonnées ne sont pas prises en compte.
-   Date du dossier : la date de réalisation urgente de son LOT (même règle qu'au point 1) ;
-   si le dossier est réparti sur plusieurs lots, la plus urgente. Un dossier sans lot n'a
-   pas de date : il est écarté quand on filtre sur une plage de dates.
+   Date et période du dossier : celles de son LOT (même règles qu'au point 1). Un dossier
+   est retenu si l'un de ses lots est dans la plage de dates de SA période (Période 4 ou 5).
+   Un dossier sans lot n'a ni date ni période : il est écarté dès qu'une plage est choisie.
 """
 from __future__ import annotations
 
@@ -84,6 +84,15 @@ def dates_urgentes_lots(df: pd.DataFrame, date_jour: date) -> pd.Series:
     en_delai = lignes["date_realisation"] + pd.DateOffset(months=12) >= pd.Timestamp(date_jour)
     urgente = lignes["date_realisation"].where(en_delai).groupby(lignes["lot"]).min()
     return urgente.fillna(lignes.groupby("lot")["date_realisation"].min())
+
+
+def periodes_lots(df: pd.DataFrame) -> pd.Series:
+    """Période de chaque lot (toutes étapes) d'après sa date réelle d'engagement la plus ancienne."""
+    engagement = df[_avec_lot(df)].groupby("lot")["date_engagement"].min()
+    periode = pd.Series(PERIODE_INCONNUE, index=engagement.index)
+    periode[engagement.notna() & (engagement <= FIN_PERIODE_4)] = PERIODE_4
+    periode[engagement > FIN_PERIODE_4] = PERIODE_5
+    return periode
 
 
 def lots_depot(df: pd.DataFrame, date_jour: date) -> pd.DataFrame:
@@ -156,7 +165,7 @@ def dossiers_actions(df: pd.DataFrame, date_jour: date) -> pd.DataFrame:
     indicateur vrai / faux par critère et le texte des actions à mener.
     """
     colonnes = (["dossier", "fiche", "dcts", "organisme", "stades", "statuts_ah", "statuts_controle",
-                 "lots", "etapes", "nb_ops", "date_urgente_lot", "drr_plus_ancienne", "echeance"]
+                 "lots", "periodes", "etapes", "nb_ops", "date_urgente_lot", "drr_plus_ancienne", "echeance"]
                 + [c for c, *_ in CRITERES] + ["actions"])
     t = df[(df["abandon"].map(normaliser) != "oui") & (df["dossier"] != "")].copy()
     if t.empty:
@@ -170,14 +179,16 @@ def dossiers_actions(df: pd.DataFrame, date_jour: date) -> pd.DataFrame:
                                                                                               regex=False)
     t["ah_scinder"] = t["statut_ah"].map(normaliser).isin({normaliser(s) for s in STATUTS_AH_A_SCINDER})
     t["lot_affiche"] = t["lot"].where(t["lot"].map(normaliser) != normaliser(regles.LOT_VIDE), "")
-    # Date urgente du lot associé à chaque ligne (vide si la ligne n'est dans aucun lot)
+    # Date urgente et période du lot associé à chaque ligne (vides si la ligne n'est dans aucun lot)
     t["date_urgente_lot"] = t["lot"].map(dates_urgentes_lots(df, date_jour))
+    t["periode_lot"] = t["lot"].map(periodes_lots(df)).fillna("")
 
     g = t.groupby(["dossier", "fiche"]).agg(
         dcts=("dcts", _uniques), organisme=("organisme", _uniques), stades=("stade", _uniques),
         statuts_ah=("statut_ah", _uniques), statuts_controle=("statut_controle", _uniques),
         lots=("lot_affiche", _uniques), etapes=("etape", _uniques), nb_ops=("dossier", "size"),
         drr_plus_ancienne=("date_realisation", "min"), date_urgente_lot=("date_urgente_lot", "min"),
+        periodes=("periode_lot", _uniques),
         superviser=(SUPERVISER, "any"), incomplet=(INCOMPLET, "any"), piece_nc=(PIECE_NC, "any"),
         operation_nc=(OPERATION_NC, "any"), ah_scinder=("ah_scinder", "any"),
     ).reset_index()
@@ -202,10 +213,33 @@ def dossiers_actions(df: pd.DataFrame, date_jour: date) -> pd.DataFrame:
                          na_position="last")[colonnes].reset_index(drop=True)
 
 
-def filtrer_dossiers(dossiers: pd.DataFrame, debut: date, fin: date) -> pd.DataFrame:
-    """Dossiers dont la date de réalisation urgente du lot est entre debut et fin (inclus)."""
-    return dossiers[dossiers["date_urgente_lot"].between(pd.Timestamp(debut), pd.Timestamp(fin),
-                                                         inclusive="both")].reset_index(drop=True)
+def filtrer_dossiers(df: pd.DataFrame, dossiers: pd.DataFrame, date_jour: date,
+                     plages: dict) -> pd.DataFrame:
+    """
+    Dossiers dont au moins un lot est dans la plage de dates de sa période.
+    plages : {"Période 4": (debut, fin) ou None, "Période 5": (debut, fin) ou None}
+             None = toutes les dates de cette période.
+    La date urgente et la période affichées sont alors celles des lots retenus.
+    """
+    lignes = df[_avec_lot(df) & (df["dossier"] != "")][["dossier", "fiche", "lot"]].drop_duplicates()
+    lignes = lignes.assign(date_urgente_lot=lignes["lot"].map(dates_urgentes_lots(df, date_jour)),
+                           periode=lignes["lot"].map(periodes_lots(df)))
+    garde = pd.Series(False, index=lignes.index)
+    for periode in PERIODES:
+        de_la_periode = lignes["periode"] == periode
+        plage = plages.get(periode)
+        if plage is None:
+            garde |= de_la_periode
+        else:
+            garde |= de_la_periode & lignes["date_urgente_lot"].between(
+                pd.Timestamp(plage[0]), pd.Timestamp(plage[1]), inclusive="both")
+    retenus = lignes[garde].groupby(["dossier", "fiche"]).agg(
+        date_retenue=("date_urgente_lot", "min"), periodes_retenues=("periode", _uniques)).reset_index()
+    t = dossiers.merge(retenus, on=["dossier", "fiche"], how="inner")
+    t["date_urgente_lot"], t["periodes"] = t["date_retenue"], t["periodes_retenues"]
+    return (t.drop(columns=["date_retenue", "periodes_retenues"])
+            .sort_values(["date_urgente_lot", "echeance", "dossier", "fiche"], na_position="last")
+            .reset_index(drop=True))
 
 
 def liste_critere(dossiers: pd.DataFrame, cle: str | None) -> pd.DataFrame:
@@ -218,7 +252,7 @@ def tableau_dossiers(t: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({
         "N° dossier": t["dossier"], "Fiche CEE": t["fiche"], "Action(s) à mener": t["actions"],
         "Stade": t["stades"], "Statut AH": t["statuts_ah"], "Statut du contrôle": t["statuts_controle"],
-        "Lot de contrôle": t["lots"],
+        "Lot de contrôle": t["lots"], "Période": t["periodes"],
         "Date de réalisation urgente du lot": pd.to_datetime(t["date_urgente_lot"]).dt.date,
         "Étape de contrôle": t["etapes"],
         "Opérations": t["nb_ops"].astype(int), "DCTS": t["dcts"], "Organisme": t["organisme"],
