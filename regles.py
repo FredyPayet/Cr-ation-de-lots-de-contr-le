@@ -38,6 +38,7 @@ COLONNES = [
     ("L", "Date réelle d'engagement", "date_engagement"),
     ("M", "Date prévisionnelle de réalisation", "date_prev_realisation"),
     ("N", "Date réelle de réalisation", "date_realisation"),
+    ("O", "Stade", "stade"),
     ("T", "Fiche CEE", "fiche"),
     ("U", "Autres fiches à contrôler", "autres_fiches"),
     ("V", "Lot de contrôle", "lot"),
@@ -257,6 +258,11 @@ def lire_export(fichier) -> pd.DataFrame:
         df[col] = df[col].where(df[col].notna(), "").astype(str).str.strip()
         df.loc[df[col].isin(["nan", "None"]), col] = ""
     df["fiche"] = df["fiche"].str.upper()
+    # Stade du dossier (colonne O) : « 1 », « 1V », « 2 », « 3 », « 3F », « 3R »…
+    # Un stade lu comme un nombre (2.0) redevient « 2 ».
+    df["stade"] = [("" if pd.isna(v) else str(int(v)) if isinstance(v, float) and float(v).is_integer()
+                    else str(v)).strip().upper() for v in df["stade"]]
+    df.loc[df["stade"].isin(["NAN", "NONE"]), "stade"] = ""
     df["siren_norm"] = df["siren"].map(normaliser_siren)
 
     # Dates

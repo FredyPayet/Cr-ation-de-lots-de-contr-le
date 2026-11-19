@@ -12,7 +12,7 @@ Organisation de ce fichier :
     3. Barre latérale : fichier et réglages
     4. Onglet « Création des lots » (indicateurs, bureaux, parties 1, 2, 3)
     5. Bouton d'archivage (en haut de page)
-    6. Onglet « Opérations écartées », puis onglet « Planning » (charge de la semaine)
+    6. Onglet « Dépôt et actions sur les dossiers », puis onglet « Planning »
     7. Onglet « Historique »
 """
 from __future__ import annotations
@@ -36,6 +36,10 @@ try:
     import planning
 except ImportError:
     planning = None
+try:
+    import depot
+except ImportError:
+    depot = None
 try:
     import planning_pdf
 except ImportError:      # fichier absent, ou matplotlib / reportlab non installés
@@ -119,6 +123,7 @@ def _fichiers_anciens() -> list[str]:
         ("exports.py", hasattr(exports, "excel_tableau")),
         ("rapport_pdf.py", rapport_pdf is None or hasattr(rapport_pdf, "AUDIT")),
         ("planning.py", planning is None or hasattr(planning, "resume")),
+        ("regles.py", depot is None or any(c[2] == "stade" for c in regles.COLONNES)),
     ]
     return [nom for nom, ok in controles if not ok]
 
@@ -127,7 +132,7 @@ if _fichiers_anciens():
     # Après une mise à jour sur GitHub, le serveur garde parfois les anciens fichiers en mémoire :
     # on les relit une fois depuis le disque avant de conclure qu'ils sont anciens.
     import importlib
-    for _module in (regles, exports, stockage, messagerie, planning, rapport_pdf, planning_pdf):
+    for _module in (regles, exports, stockage, messagerie, planning, rapport_pdf, planning_pdf, depot):
         if _module is not None:
             try:
                 importlib.reload(_module)
@@ -142,7 +147,7 @@ if _fichiers_anciens():
     st.error("⚠️ Mise à jour incomplète. Fichier(s) encore à l'ancienne version sur GitHub : "
              + ", ".join(_fichiers_anciens()) + ". "
              "Remplacez tous les fichiers de l'application (app.py, regles.py, exports.py, "
-             "stockage.py, messagerie.py, rapport_pdf.py, planning.py, planning_pdf.py) par ceux de la "
+             "stockage.py, messagerie.py, rapport_pdf.py, planning.py, planning_pdf.py, depot.py) par ceux de la "
              "dernière version. S'ils sont déjà à jour sur GitHub, redémarrez l'application : "
              "« Manage app » en bas à droite, puis ⋮ → « Reboot app ».")
     st.stop()
@@ -357,7 +362,7 @@ with st.sidebar:
 
 zone_haut = st.container()
 onglet_creation, onglet_planning, onglet_ecartes, onglet_historique, onglet_mail = st.tabs(
-    ["📦 Création des lots", "🗓️ Planning", "🚫 Opérations écartées", "📈 Historique",
+    ["📦 Création des lots", "🗓️ Planning", "📂 Dépôt et actions sur les dossiers", "📈 Historique",
      "📧 Rapport hebdomadaire"])
 
 res = None
@@ -482,7 +487,9 @@ with onglet_creation:
             c3.metric("Ajoutées aux lots existants", fr(ajouts["nb_ops"].sum()), border=True,
                       help="Nombre d'opérations ajoutées aux lots « En cours de constitution ».")
             c4.metric("Opérations écartées", fr(res["ecartes"]["nb_ops"].sum()), border=True,
-                      help="Détail et motifs dans l'onglet « Opérations écartées ».")
+                      help="Opérations éligibles sans lot qui ne peuvent pas être intégrées. Le détail des "
+                           "motifs « délai de contrôle » et « Statut AH Sans objet » est dans l'onglet "
+                           "« Dépôt et actions sur les dossiers ».")
 
         # ---------------- Répartition par bureau ----------------
         with zone_bureaux:
@@ -537,7 +544,8 @@ with onglet_creation:
             tableau = regles.tableau_fiche_dcts(res["restants"])
             if tableau.empty:
                 st.info("Aucune opération intégrable avec les réglages actuels. "
-                        "Consultez l'onglet « Opérations écartées » pour comprendre pourquoi.")
+                        "Vérifiez les régions et la plage de DFT dans le panneau de gauche, ou consultez "
+                        "l'onglet « Dépôt et actions sur les dossiers » (opérations écartées).")
             else:
                 st.dataframe(tableau, width="stretch")
 
@@ -548,7 +556,8 @@ with onglet_creation:
                    "écart de 4 mois maximum entre dates de réalisation si possible.")
         if lots.empty:
             st.info("Aucun nouveau lot à créer avec les réglages actuels. Essayez d'élargir les "
-                    "régions ou de décocher la plage de DFT, ou consultez l'onglet « Opérations écartées ».")
+                    "régions ou de décocher la plage de DFT, ou consultez l'onglet « Dépôt et actions sur "
+                    "les dossiers » (opérations écartées).")
         else:
             fiches = sorted(lots["fiche"].unique())
             filtre = st.multiselect("Afficher les fiches CEE", fiches, default=fiches,
@@ -731,42 +740,173 @@ with zone_haut:
 
 
 # ============================================================================
-# 6. ONGLET « OPÉRATIONS ÉCARTÉES »
+# 6. ONGLET « DÉPÔT ET ACTIONS SUR LES DOSSIERS »
+#    1. Dépôt des lots (Période 4 / Période 5, recherche par plage de dates)
+#    2. Actions sur les dossiers (menu déroulant par critère)
+#    3. Opérations écartées : délai de contrôle et Statut AH « Sans objet »
 # ============================================================================
 
+@st.cache_data(show_spinner=False, max_entries=4)
+def calculer_depot(_df: pd.DataFrame, cle_fichier: str, date_jour: date,
+                   version: str = VERSION_CODE) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return depot.lots_depot(_df, date_jour), depot.dossiers_actions(_df)
+
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 with onglet_ecartes:
-    if res is None:
-        st.info("Chargez un export pour voir les opérations écartées et leur motif.")
-    elif res["ecartes"].empty:
-        st.success("Aucune opération éligible n'a été écartée. 🎉")
+    if depot is None:
+        st.error("⚠️ Le fichier « depot.py » est absent. Déposez-le sur GitHub avec les autres fichiers "
+                 "de l'application, puis redémarrez-la.")
+    elif res is None:
+        st.info("Chargez un export (panneau de gauche) pour préparer le dépôt des lots et voir les actions "
+                "à mener sur les dossiers.")
     else:
-        ec = res["ecartes"]
-        st.markdown("Opérations **Eligible** sans lot (NEANT) qui ne peuvent pas être intégrées, "
-                    "avec la raison.")
-        par_motif = ec.groupby("motif")["nb_ops"].sum().sort_values()
-        fig = go.Figure(go.Bar(x=par_motif.values, y=par_motif.index, orientation="h",
-                               marker_color="#B45309", text=[fr(v) for v in par_motif.values],
-                               textposition="outside"))
-        fig.update_layout(height=80 + 45 * len(par_motif), margin=dict(l=0, r=40, t=10, b=0),
-                          xaxis_title="Nombre d'opérations", font=dict(size=14), plot_bgcolor="white")
-        st.plotly_chart(fig, width="stretch")
-        motifs = st.multiselect("Filtrer par motif", sorted(ec["motif"].unique()),
-                                placeholder="Tous les motifs")
-        vue_ec = ec[ec["motif"].isin(motifs)] if motifs else ec
-        st.dataframe(vue_ec, hide_index=True,
-                     width="stretch",
-                     column_config={"dossier": "N° dossier", "fiche": "Fiche CEE", "dcts": "DCTS",
-                                    "motif": "Motif", "nb_ops": st.column_config.NumberColumn(
-                                        "Opérations", format="%d")})
-        export_ec = vue_ec.rename(columns={"dossier": "N° dossier", "fiche": "Fiche CEE",
-                                           "dcts": "DCTS", "motif": "Motif", "nb_ops": "Opérations"})
-        export_ec.insert(0, "Date de l'export", date_fr(date_export))
-        st.download_button(
-            "⬇️ Télécharger les opérations écartées (Excel)" + (" — motifs filtrés" if motifs else ""),
-            data=exports.excel_tableau({"Opérations écartées": export_ec}),
-            file_name=f"Operations_ecartees_{date_export:%Y-%m-%d}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary", width="stretch")
+        aujourdhui = date.today()
+        lots_dep, dossiers_act = calculer_depot(df, cle_fichier, aujourdhui)
+
+        # ---------------- 1. Dépôt des lots ----------------
+        st.subheader("1. Dépôt des lots")
+        st.markdown(
+            "Lots aux étapes « Lot traité », « En cours de contrôle », « En demande de coordonnées », "
+            "« En cours de constitution » et « Lot restitué ». La **date de réalisation urgente** d'un lot est "
+            "sa date réelle de réalisation la plus ancienne dont le délai de 12 mois n'est pas encore dépassé "
+            f"au {date_fr(aujourdhui)}. **Période 4** : date réelle d'engagement jusqu'au 31/12/2021 ; "
+            "**Période 5** : après.")
+        if lots_dep.empty:
+            st.success("Aucun lot à ces étapes dans cet export.")
+        else:
+            inconnus = int((lots_dep["periode"] == depot.PERIODE_INCONNUE).sum())
+            if inconnus:
+                st.warning(f"⚠️ {fr(inconnus)} lot(s) n'ont aucune date réelle d'engagement : ils ne sont "
+                           "classés ni en Période 4 ni en Période 5.")
+            colonnes_dates = {c: st.column_config.DateColumn(format="DD/MM/YYYY") for c in
+                              ("Date de réalisation urgente du lot", "Échéance (+ 12 mois)",
+                               "Date réelle d'engagement")}
+            colonnes_dates["CUMAC MWhc TOTAL du lot"] = st.column_config.NumberColumn(format="%.3f")
+            for periode in depot.PERIODES:
+                tous = lots_dep[lots_dep["periode"] == periode]
+                with st.container(border=True):
+                    st.markdown(f"#### {periode}")
+                    st.caption(f"{fr(len(tous))} lots, {fr(tous['nb_ops'].sum())} opérations au total.")
+                    cle_p = regles.normaliser(periode).replace(" ", "_")   # « periode_4 » (sans accent)
+                    with st.form(f"form_{cle_p}", border=False):
+                        c1, c2, c3 = st.columns([2, 2, 1.4], vertical_alignment="bottom")
+                        debut = c1.date_input("Du (date de réalisation urgente)", value=None,
+                                              format="DD/MM/YYYY", key=f"debut_{cle_p}")
+                        fin = c2.date_input("Au (inclus)", value=None, format="DD/MM/YYYY", key=f"fin_{cle_p}")
+                        cherche = c3.form_submit_button("🔍 Rechercher", type="primary", width="stretch")
+                    if cherche:
+                        if debut is None or fin is None:
+                            st.session_state.pop(f"plage_{cle_p}", None)
+                            st.error("Indiquez une date de début et une date de fin, puis cliquez sur Rechercher.")
+                        elif debut > fin:
+                            st.session_state.pop(f"plage_{cle_p}", None)
+                            st.error("La date de début doit être avant la date de fin.")
+                        else:
+                            st.session_state[f"plage_{cle_p}"] = (debut, fin)
+                    plage = st.session_state.get(f"plage_{cle_p}")
+                    if plage is None:
+                        st.caption("Saisissez une plage de dates puis cliquez sur « Rechercher ».")
+                        continue
+                    trouves = depot.filtrer_lots(lots_dep, periode, *plage)
+                    titre_plage = f"du {plage[0]:%d/%m/%Y} au {plage[1]:%d/%m/%Y}"
+                    if trouves.empty:
+                        st.info(f"Aucun lot de la {periode} avec une date de réalisation urgente {titre_plage}.")
+                        continue
+                    st.markdown(f"**{fr(len(trouves))} lots** {titre_plage} — "
+                                f"{fr(trouves['nb_ops'].sum())} opérations, "
+                                f"{fr(round(trouves['volume'].sum()))} MWhc cumac")
+                    vue = depot.tableau_lots(trouves)
+                    st.dataframe(vue.iloc[:, :4], hide_index=True, width="stretch",
+                                 height=min(38 * (len(vue) + 1), 420), column_config=colonnes_dates)
+                    depasses = int((trouves["statut_delai"] == depot.DELAI_DEPASSE).sum())
+                    if depasses:
+                        st.warning(f"⚠️ {fr(depasses)} lot(s) : délai de 12 mois dépassé pour toutes leurs "
+                                   "opérations (la date la plus ancienne est affichée).")
+                    st.download_button(
+                        f"⬇️ Exporter ces {fr(len(trouves))} lots (Excel)", key=f"export_{cle_p}",
+                        data=exports.excel_tableau({periode: vue}), mime=XLSX,
+                        file_name=f"Depot_{cle_p}_{plage[0]:%Y-%m-%d}_au_{plage[1]:%Y-%m-%d}.xlsx",
+                        help="Les 4 colonnes affichées, plus l'échéance, l'étape, la fiche CEE et la date "
+                             "d'engagement de chaque lot.")
+            st.caption("Volume : somme de la colonne J « CUMAC MWhc TOTAL » des opérations du lot qui ont une "
+                       "date réelle de réalisation. Nombre d'opérations : toutes les lignes du lot.")
+
+        # ---------------- 2. Actions sur les dossiers ----------------
+        st.subheader("2. Actions sur les dossiers")
+        st.markdown("Regroupement par **N° dossier et Fiche CEE** (opérations abandonnées exclues). "
+                    "Un même dossier peut relever de plusieurs critères.")
+        comptes = {cle: int(dossiers_act[cle].sum()) if len(dossiers_act) else 0 for cle, *_ in depot.CRITERES}
+        icones = {depot.SUPERVISER: "👀", depot.INCOMPLET: "📝", depot.A_SCINDER: "✂️",
+                  depot.PIECE_NC: "📄", depot.OPERATION_NC: "❌"}
+        courts = {depot.SUPERVISER: "À superviser", depot.INCOMPLET: "Incomplets",
+                  depot.A_SCINDER: "À scinder", depot.PIECE_NC: "Pièce non conforme",
+                  depot.OPERATION_NC: "Opé. non conforme"}
+        cartes = st.columns(5)
+        for carte, (cle, libelle, _action) in zip(cartes, depot.CRITERES):
+            carte.metric(courts[cle], fr(comptes[cle]), border=True, help=libelle)
+
+        choix_critere = st.selectbox(
+            "Critère à afficher", [None] + [c for c, *_ in depot.CRITERES],
+            format_func=lambda c: (f"Tous les dossiers avec une action ({fr(len(dossiers_act))})" if c is None
+                                   else f"{icones[c]} {dict((k, l) for k, l, _ in depot.CRITERES)[c]} "
+                                        f"({fr(comptes[c])})"),
+            key="critere_dossiers")
+        liste = depot.liste_critere(dossiers_act, choix_critere)
+        if liste.empty:
+            st.success("Aucun dossier pour ce critère. 🎉")
+        else:
+            vue = depot.tableau_dossiers(liste)
+            st.dataframe(vue, hide_index=True, width="stretch", height=min(38 * (len(vue) + 1), 460),
+                         column_config={c: st.column_config.DateColumn(format="DD/MM/YYYY") for c in
+                                        ("Date réelle de réalisation la plus ancienne", "Échéance (+ 12 mois)")})
+            st.caption("Les échéances les plus proches sont en haut. Un dossier est « à scinder par le service "
+                       "contrôle » s'il est incomplet et que son Statut AH est « Original reçu » ou « Attente "
+                       "original ».")
+            nom_liste = "Tous_les_dossiers" if choix_critere is None else courts[choix_critere].split(" (")[0]
+            g, d = st.columns(2)
+            g.download_button(f"⬇️ Exporter cette liste ({fr(len(vue))} lignes, Excel)", key="export_dossiers",
+                              data=exports.excel_tableau({nom_liste[:31]: vue}), mime=XLSX, type="primary",
+                              width="stretch",
+                              file_name=f"Actions_{nom_liste.replace(' ', '_')}_{date_export:%Y-%m-%d}.xlsx")
+        if len(dossiers_act):
+            onglets_actions = {courts[c][:31]: depot.tableau_dossiers(depot.liste_critere(dossiers_act, c))
+                               for c, *_ in depot.CRITERES}
+            (d if not liste.empty else st).download_button(
+                "⬇️ Exporter toutes les listes (un onglet par critère)", key="export_toutes_listes",
+                data=exports.excel_tableau({"Tous les dossiers": depot.tableau_dossiers(dossiers_act),
+                                            **onglets_actions}),
+                mime=XLSX, width="stretch", file_name=f"Actions_sur_les_dossiers_{date_export:%Y-%m-%d}.xlsx")
+
+        # ---------------- 3. Opérations écartées (2 motifs) ----------------
+        st.subheader("3. Opérations écartées de la création des lots")
+        motifs_gardes = [regles.MOTIF_DELAI, regles.MOTIF_SANS_OBJET]
+        ec = res["ecartes"][res["ecartes"]["motif"].isin(motifs_gardes)]
+        st.markdown("Opérations **Eligible** sans lot (NEANT) qui ne peuvent pas être intégrées pour l'un de ces "
+                    "deux motifs : « " + " » et « ".join(motifs_gardes) + " ».")
+        if ec.empty:
+            st.success("Aucune opération écartée pour ces deux motifs. 🎉")
+        else:
+            c = st.columns(2)
+            for col, motif in zip(c, motifs_gardes):
+                sous = ec[ec["motif"] == motif]
+                col.metric(motif, fr(sous["nb_ops"].sum()), border=True,
+                           help=f"{fr(sous['dossier'].nunique())} dossiers concernés.")
+            choix_motif = st.selectbox("Motif à afficher", [None] + motifs_gardes, key="motif_ecartes",
+                                       format_func=lambda m: "Les deux motifs" if m is None else m)
+            vue_ec = ec if choix_motif is None else ec[ec["motif"] == choix_motif]
+            st.dataframe(vue_ec, hide_index=True, width="stretch", height=min(38 * (len(vue_ec) + 1), 420),
+                         column_config={"dossier": "N° dossier", "fiche": "Fiche CEE", "dcts": "DCTS",
+                                        "motif": "Motif", "nb_ops": st.column_config.NumberColumn(
+                                            "Opérations", format="%d")})
+            export_ec = vue_ec.rename(columns={"dossier": "N° dossier", "fiche": "Fiche CEE",
+                                               "dcts": "DCTS", "motif": "Motif", "nb_ops": "Opérations"})
+            export_ec.insert(0, "Date de l'export", date_fr(date_export))
+            st.download_button(
+                "⬇️ Télécharger ces opérations écartées (Excel)", key="export_ecartes",
+                data=exports.excel_tableau({"Opérations écartées": export_ec}), mime=XLSX, width="stretch",
+                file_name=f"Operations_ecartees_{date_export:%Y-%m-%d}.xlsx")
 
 
 # ============================================================================

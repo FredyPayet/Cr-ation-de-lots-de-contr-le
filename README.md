@@ -13,6 +13,7 @@ aux bureaux de contrôle, et qui archive les résultats de chaque export.
 | `exports.py` | Fichiers Excel téléchargés (un fichier par fiche CEE, un onglet par lot) |
 | `stockage.py` | Archive et réglages (Google Sheet ou dossier local), lecture de la liste des clients |
 | `rapport_pdf.py` | Rapport PDF hebdomadaire (schéma du flux, indicateurs, graphiques) |
+| `depot.py` | Dépôt des lots (Période 4 / 5) et actions à mener sur les dossiers |
 | `planning.py` | Charge de travail de la semaine : priorités des lots, relances |
 | `planning_pdf.py` | PDF « Planning de la semaine », joint au mail en second document |
 | `messagerie.py` | Mail hebdomadaire : texte formel et fichier de mail à ouvrir dans Outlook |
@@ -166,6 +167,35 @@ Chaque ligne de l'export appartient à une seule catégorie :
 reste. Rechargez l'export concerné puis cliquez sur **➕ Compléter l'archive** : les indicateurs
 de suivi et les graphiques sont recalculés (délai de 5 semaines compté comme le jour de
 l'archivage d'origine). Les chiffres de création des lots ne sont pas modifiés.
+
+## Onglet « 📂 Dépôt et actions sur les dossiers »
+
+Cet onglet remplace « Opérations écartées ».
+
+**1. Dépôt des lots** — lots aux étapes « Lot traité », « En cours de contrôle », « En demande de
+coordonnées », « En cours de constitution » et « Lot restitué ».
+- *Date de réalisation urgente du lot* : la date réelle de réalisation (colonne N) la plus
+  ancienne du lot dont le délai (+ 12 mois) n'est pas dépassé à la date du jour. Si toutes les
+  opérations ont dépassé le délai, la plus ancienne est gardée et le lot est signalé.
+- *Période 4* : date réelle d'engagement (colonne L, la plus ancienne du lot) jusqu'au
+  31/12/2021 ; *Période 5* : après.
+- Pour chaque période : deux dates (« Du », « Au », incluses) et le bouton **🔍 Rechercher**.
+  Le tableau donne le lot, sa date urgente, son volume CUMAC (colonne J, lignes avec date réelle)
+  et son nombre d'opérations. Export Excel avec quelques colonnes en plus.
+
+**2. Actions sur les dossiers** — regroupement N° dossier + Fiche CEE, opérations abandonnées
+exclues. Menu déroulant pour choisir le critère, export Excel de chaque liste ou de toutes :
+
+| Critère | Règle |
+|---|---|
+| À superviser | un « Stade » (colonne O) contient « 3F » |
+| Incomplet | un « Stade » vaut 1, 1V, 2 ou 3 |
+| À scinder par le service contrôle | incomplet et « Statut AH » « Original reçu » ou « Attente original » |
+| Pièce non conforme | un « Stade » contient « 3R » |
+| Opération non conforme | un « Statut du contrôle » (colonne AC) contient « Contrôle KO » |
+
+**3. Opérations écartées** — uniquement les motifs « Moins de 2 mois avant la fin du délai de
+contrôle » et « Statut AH « Sans objet » sur le dossier ».
 
 ## Onglet « 🗓️ Planning » (charge de travail de la semaine)
 
