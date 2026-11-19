@@ -184,7 +184,10 @@ coordonnées », « En cours de constitution » et « Lot restitué ».
   et son nombre d'opérations. Export Excel avec quelques colonnes en plus.
 
 **2. Actions sur les dossiers** — regroupement N° dossier + Fiche CEE, opérations abandonnées
-exclues. Menu déroulant pour choisir le critère, export Excel de chaque liste ou de toutes :
+exclues. Plage de dates facultative (« Du », « Au », 🔍 Rechercher) sur la **date de réalisation
+urgente du lot** associé au dossier (même règle qu'au point 1 ; la plus urgente si le dossier est
+dans plusieurs lots ; un dossier sans lot est écarté quand une plage est choisie). Menu déroulant
+pour choisir le critère, export Excel de chaque liste ou de toutes :
 
 | Critère | Règle |
 |---|---|

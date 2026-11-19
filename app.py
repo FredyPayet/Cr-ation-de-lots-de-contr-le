@@ -749,7 +749,7 @@ with zone_haut:
 @st.cache_data(show_spinner=False, max_entries=4)
 def calculer_depot(_df: pd.DataFrame, cle_fichier: str, date_jour: date,
                    version: str = VERSION_CODE) -> tuple[pd.DataFrame, pd.DataFrame]:
-    return depot.lots_depot(_df, date_jour), depot.dossiers_actions(_df)
+    return depot.lots_depot(_df, date_jour), depot.dossiers_actions(_df, date_jour)
 
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -836,7 +836,37 @@ with onglet_ecartes:
         # ---------------- 2. Actions sur les dossiers ----------------
         st.subheader("2. Actions sur les dossiers")
         st.markdown("Regroupement par **N° dossier et Fiche CEE** (opérations abandonnées exclues). "
-                    "Un même dossier peut relever de plusieurs critères.")
+                    "Un même dossier peut relever de plusieurs critères. La **date du dossier** est la date de "
+                    "réalisation urgente de son lot (même règle qu'au point 1 ; la plus urgente si le dossier "
+                    "est dans plusieurs lots).")
+
+        # Plage de dates (facultative) sur la date de réalisation urgente du lot
+        with st.form("form_dossiers", border=True):
+            c1, c2, c3 = st.columns([2, 2, 1.4], vertical_alignment="bottom")
+            debut_d = c1.date_input("Du (date urgente du lot)", value=None, format="DD/MM/YYYY", key="debut_dossiers")
+            fin_d = c2.date_input("Au (inclus)", value=None, format="DD/MM/YYYY", key="fin_dossiers")
+            cherche_d = c3.form_submit_button("🔍 Rechercher", type="primary", width="stretch")
+        if cherche_d:
+            if debut_d is None and fin_d is None:
+                st.session_state.pop("plage_dossiers", None)       # aucune date : tous les dossiers
+            elif debut_d is None or fin_d is None:
+                st.error("Indiquez une date de début et une date de fin, ou videz les deux dates pour voir "
+                         "tous les dossiers.")
+            elif debut_d > fin_d:
+                st.error("La date de début doit être avant la date de fin.")
+            else:
+                st.session_state["plage_dossiers"] = (debut_d, fin_d)
+        plage_d = st.session_state.get("plage_dossiers")
+        sans_lot = int(dossiers_act["date_urgente_lot"].isna().sum()) if len(dossiers_act) else 0
+        if plage_d:
+            dossiers_act = depot.filtrer_dossiers(dossiers_act, *plage_d)
+            st.info(f"📅 Dossiers dont la date urgente du lot est entre le {plage_d[0]:%d/%m/%Y} et le "
+                    f"{plage_d[1]:%d/%m/%Y} : **{fr(len(dossiers_act))}**. Les cartes, la liste et les exports "
+                    f"ne portent que sur ces dossiers ({fr(sans_lot)} dossiers sans lot sont écartés). "
+                    "Pour tout revoir, videz les deux dates puis cliquez sur Rechercher.")
+        else:
+            st.caption(f"Sans dates : tous les dossiers sont affichés, y compris {fr(sans_lot)} dossiers sans lot "
+                       "(sans date urgente).")
         comptes = {cle: int(dossiers_act[cle].sum()) if len(dossiers_act) else 0 for cle, *_ in depot.CRITERES}
         icones = {depot.SUPERVISER: "👀", depot.INCOMPLET: "📝", depot.A_SCINDER: "✂️",
                   depot.PIECE_NC: "📄", depot.OPERATION_NC: "❌"}
@@ -852,7 +882,7 @@ with onglet_ecartes:
             format_func=lambda c: (f"Tous les dossiers avec une action ({fr(len(dossiers_act))})" if c is None
                                    else f"{icones[c]} {dict((k, l) for k, l, _ in depot.CRITERES)[c]} "
                                         f"({fr(comptes[c])})"),
-            key="critere_dossiers")
+            key=f"critere_dossiers_{plage_d}")   # menu recréé quand la plage change (comptes à jour)
         liste = depot.liste_critere(dossiers_act, choix_critere)
         if liste.empty:
             st.success("Aucun dossier pour ce critère. 🎉")
@@ -860,8 +890,9 @@ with onglet_ecartes:
             vue = depot.tableau_dossiers(liste)
             st.dataframe(vue, hide_index=True, width="stretch", height=min(38 * (len(vue) + 1), 460),
                          column_config={c: st.column_config.DateColumn(format="DD/MM/YYYY") for c in
-                                        ("Date réelle de réalisation la plus ancienne", "Échéance (+ 12 mois)")})
-            st.caption("Les échéances les plus proches sont en haut. Un dossier est « à scinder par le service "
+                                        ("Date de réalisation urgente du lot",
+                                         "Date réelle de réalisation la plus ancienne", "Échéance (+ 12 mois)")})
+            st.caption("Les dates urgentes les plus proches sont en haut. Un dossier est « à scinder par le service "
                        "contrôle » s'il est incomplet et que son Statut AH est « Original reçu » ou « Attente "
                        "original ».")
             nom_liste = "Tous_les_dossiers" if choix_critere is None else courts[choix_critere].split(" (")[0]
@@ -869,7 +900,9 @@ with onglet_ecartes:
             g.download_button(f"⬇️ Exporter cette liste ({fr(len(vue))} lignes, Excel)", key="export_dossiers",
                               data=exports.excel_tableau({nom_liste[:31]: vue}), mime=XLSX, type="primary",
                               width="stretch",
-                              file_name=f"Actions_{nom_liste.replace(' ', '_')}_{date_export:%Y-%m-%d}.xlsx")
+                              file_name=f"Actions_{regles.normaliser(nom_liste).replace(' ', '_')}_"
+                                        + (f"{plage_d[0]:%Y-%m-%d}_au_{plage_d[1]:%Y-%m-%d}" if plage_d
+                                           else f"{date_export:%Y-%m-%d}") + ".xlsx")
         if len(dossiers_act):
             onglets_actions = {courts[c][:31]: depot.tableau_dossiers(depot.liste_critere(dossiers_act, c))
                                for c, *_ in depot.CRITERES}
@@ -877,7 +910,9 @@ with onglet_ecartes:
                 "⬇️ Exporter toutes les listes (un onglet par critère)", key="export_toutes_listes",
                 data=exports.excel_tableau({"Tous les dossiers": depot.tableau_dossiers(dossiers_act),
                                             **onglets_actions}),
-                mime=XLSX, width="stretch", file_name=f"Actions_sur_les_dossiers_{date_export:%Y-%m-%d}.xlsx")
+                mime=XLSX, width="stretch",
+                file_name=(f"Actions_sur_les_dossiers_{plage_d[0]:%Y-%m-%d}_au_{plage_d[1]:%Y-%m-%d}.xlsx"
+                           if plage_d else f"Actions_sur_les_dossiers_{date_export:%Y-%m-%d}.xlsx"))
 
         # ---------------- 3. Opérations écartées (2 motifs) ----------------
         st.subheader("3. Opérations écartées de la création des lots")
