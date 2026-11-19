@@ -1,0 +1,3 @@
+donnees/
+__pycache__/
+.streamlit/secrets.toml

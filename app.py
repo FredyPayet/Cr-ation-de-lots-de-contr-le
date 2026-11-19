@@ -108,8 +108,15 @@ def periode_flux(ligne: dict) -> tuple[str, str]:
 
 # Empreinte du code des règles : quand regles.py, exports.py ou stockage.py change
 # (nouvelle version déployée), les calculs gardés en mémoire sont automatiquement ignorés.
-VERSION_CODE = hashlib.md5(b"".join(
-    open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
+def _empreinte() -> str:
+    """Empreinte des fichiers de calcul : change à chaque mise à jour, ce qui force le recalcul
+    des résultats gardés en mémoire (sinon d'anciens résultats seraient réutilisés)."""
+    modules = (regles, exports, stockage, planning, depot, messagerie)
+    return hashlib.md5(b"".join(open(m.__file__, "rb").read() for m in modules
+                                if m is not None)).hexdigest()[:10]
+
+
+VERSION_CODE = _empreinte()
 
 # Vérification que tous les fichiers ont bien été mis à jour ensemble
 def _fichiers_anciens() -> list[str]:
@@ -140,8 +147,7 @@ if _fichiers_anciens():
                 pass
     st.cache_data.clear()
     st.cache_resource.clear()
-    VERSION_CODE = hashlib.md5(b"".join(
-        open(m.__file__, "rb").read() for m in (regles, exports, stockage))).hexdigest()[:10]
+    VERSION_CODE = _empreinte()
 
 if _fichiers_anciens():
     st.error("⚠️ Mise à jour incomplète. Fichier(s) encore à l'ancienne version sur GitHub : "

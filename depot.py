@@ -249,6 +249,10 @@ def liste_critere(dossiers: pd.DataFrame, cle: str | None) -> pd.DataFrame:
 
 def tableau_dossiers(t: pd.DataFrame) -> pd.DataFrame:
     """Tableau à afficher / exporter, libellés en français."""
+    vide = pd.Series("", index=t.index)
+    for col in ("periodes", "date_urgente_lot"):      # résultats d'une version précédente
+        if col not in t:
+            t = t.assign(**{col: vide if col == "periodes" else pd.NaT})
     return pd.DataFrame({
         "N° dossier": t["dossier"], "Fiche CEE": t["fiche"], "Action(s) à mener": t["actions"],
         "Stade": t["stades"], "Statut AH": t["statuts_ah"], "Statut du contrôle": t["statuts_controle"],
